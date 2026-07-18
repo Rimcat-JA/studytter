@@ -18,28 +18,30 @@ describe("provider credential probe", () => {
   });
 
   it("accepts an authenticated response without any chat request", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ active: true, state: "active" }), {
         status: 200,
       }),
     );
+    const fetchImpl = fetchMock as unknown as typeof fetch;
     await probeProviderCredentials({
       providerId: "nanogpt",
       baseUrl: "https://nano-gpt.com/api/subscription/v1",
       apiKey: "test-key",
       fetchImpl,
     });
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://nano-gpt.com/api/subscription/v1/usage",
     );
-    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
   });
 
   it("preserves 401 so callers do not save a rejected key", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
     );
+    const fetchImpl = fetchMock as unknown as typeof fetch;
     await expect(
       probeProviderCredentials({
         providerId: "nanogpt",

@@ -1,0 +1,14 @@
+name: Bug report
+description: Report a reproducible LearnStream problem
+body:
+  - type: textarea
+    attributes: { label: What happened? }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Steps to reproduce }
+    validations: { required: true }
+  - type: input
+    attributes: { label: Platform and app version }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Relevant logs, with keys and private material removed }

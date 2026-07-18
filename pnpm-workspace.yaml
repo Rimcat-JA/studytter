@@ -1,0 +1,24 @@
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@expo/cli@57.0.9'
+  - '@expo/metro-config@57.0.6'
+  - '@expo/prebuild-config@57.0.8'
+  - expo-asset@57.0.6
+  - expo-constants@57.0.6
+  - expo-modules-autolinking@57.0.8
+  - expo-modules-core@57.0.6
+  - expo@57.0.7
+  - '@expo/metro-runtime@57.0.6'
+  - '@expo/ui@57.0.7'
+  - expo-application@57.0.2
+  - expo-image-picker@57.0.5
+  - expo-notifications@57.0.6
+  - expo-router@57.0.7
+  - expo-sharing@57.0.6
+  - expo-task-manager@57.0.5
+  - expo-background-task@57.0.5
+patchedDependencies:
+  expo-background-task@57.0.5: patches/expo-background-task@57.0.5.patch
+  expo-task-manager@57.0.5: patches/expo-task-manager@57.0.5.patch

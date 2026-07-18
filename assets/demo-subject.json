@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "subject": {
+    "subjectId": "demo-linear-algebra",
+    "displayName": "線形代数ラボ",
+    "handle": "@linalg_sensei",
+    "avatarSeed": "linalg",
+    "contentLang": "ja",
+    "domainStyle": "problem_solving",
+    "formatWeights": { "explainer": 0.3, "quiz": 0.3, "funfact": 0.1, "misconception": 0.15, "comparison": 0.1, "mnemonic": 0.05 }
+  },
+  "atoms": [
+    { "atomId": "demo-a01", "topicLabel": "ベクトル", "kind": "definition", "difficulty": -1.2, "core": "ベクトルは大きさと向きを持つ量で、成分の組として表せる。", "note": "スカラーは大きさだけを持つ。", "sourceAnchor": "デモ p.1" },
+    { "atomId": "demo-a02", "topicLabel": "行列", "kind": "definition", "difficulty": -0.8, "core": "行列は数を長方形に並べたもので、線形変換を表現できる。", "note": "各要素は行番号と列番号で指定する。", "sourceAnchor": "デモ p.2" },
+    { "atomId": "demo-a03", "topicLabel": "行列", "kind": "rule", "difficulty": 0, "core": "行列積ABが定義できるのは、Aの列数とBの行数が等しいとき。", "note": "一般にABとBAは一致しない。", "sourceAnchor": "デモ p.3" },
+    { "atomId": "demo-a04", "topicLabel": "行列式", "kind": "definition", "difficulty": 0.3, "core": "行列式は正方行列に対応するスカラーで、線形変換による面積や体積の倍率を表す。", "note": "行列そのものとは異なる。", "sourceAnchor": "デモ p.4" },
+    { "atomId": "demo-a05", "topicLabel": "行列式", "kind": "rule", "difficulty": 0.7, "core": "行列式が0なら行列は逆行列を持たない。", "note": "列ベクトルが線形従属であることと同値。", "sourceAnchor": "デモ p.5" },
+    { "atomId": "demo-a06", "topicLabel": "逆行列", "kind": "definition", "difficulty": 0.1, "core": "Aの逆行列A⁻¹は、AA⁻¹=A⁻¹A=Iを満たす行列。", "note": "すべての正方行列に存在するわけではない。", "sourceAnchor": "デモ p.6" },
+    { "atomId": "demo-a07", "topicLabel": "固有値", "kind": "definition", "difficulty": 1.1, "core": "Av=λvを満たす0でないベクトルvを固有ベクトル、λを固有値という。", "note": "変換後も方向が変わらないベクトルを捉える。", "sourceAnchor": "デモ p.7" },
+    { "atomId": "demo-a08", "topicLabel": "線形独立", "kind": "definition", "difficulty": 0.6, "core": "ベクトルの線形結合が0になる係数がすべて0の場合、そのベクトル群は線形独立。", "note": "冗長な方向を含まないことを意味する。", "sourceAnchor": "デモ p.8" },
+    { "atomId": "demo-a09", "topicLabel": "基底", "kind": "definition", "difficulty": 0.8, "core": "ベクトル空間の基底は、空間を張る線形独立なベクトルの組。", "note": "座標は選んだ基底に依存する。", "sourceAnchor": "デモ p.9" },
+    { "atomId": "demo-a10", "topicLabel": "階数", "kind": "definition", "difficulty": 1, "core": "行列の階数は、線形独立な列ベクトルの最大個数。", "note": "行空間の次元とも一致する。", "sourceAnchor": "デモ p.10" }
+  ],
+  "postTemplates": [
+    { "format": "explainer", "prefix": "ひとことで言うと：" },
+    { "format": "funfact", "prefix": "ここがポイント。" },
+    { "format": "misconception", "prefix": "よくある勘違いに注意。" },
+    { "format": "comparison", "prefix": "似た概念と比べてみよう。" },
+    { "format": "quiz", "prefix": "30秒チェック！" }
+  ]
+}

@@ -1,0 +1,37 @@
+diff --git a/android/src/main/java/expo/modules/backgroundtask/BackgroundTaskConsumer.kt b/android/src/main/java/expo/modules/backgroundtask/BackgroundTaskConsumer.kt
+index c8e51dedebee6f6498d7aad8d217576e5de978f4..fe4bab7b82e107fe4a46fea69bdeefb3e38c09d8 100644
+--- a/android/src/main/java/expo/modules/backgroundtask/BackgroundTaskConsumer.kt
++++ b/android/src/main/java/expo/modules/backgroundtask/BackgroundTaskConsumer.kt
+@@ -16,6 +16,7 @@ class BackgroundTaskConsumer(context: Context?, taskManagerUtils: TaskManagerUti
+     private val TAG = BackgroundTaskConsumer::class.java.simpleName
+   }
+ 
++  @Volatile
+   private var task: TaskInterface? = null
+ 
+   override fun taskType(): String {
+@@ -28,8 +29,22 @@ class BackgroundTaskConsumer(context: Context?, taskManagerUtils: TaskManagerUti
+    * This only applies when the app is in release mode.
+    */
+   fun executeTask(callback: TaskExecutionCallback) {
+-    Log.d(TAG, "Executing task '${task?.name}'")
+-    taskManagerUtils.executeTask(task, null, callback)
++    // didUnregister() may run between WorkManager collecting consumers and
++    // invoking this method. Use one stable snapshot and always complete the
++    // caller instead of leaving its coroutine suspended forever.
++    val currentTask = task
++    if (currentTask == null) {
++      Log.e(TAG, "Cannot execute an unregistered background task")
++      callback.onFinished(
++        hashMapOf<String, Any>(
++          "result" to 2,
++          "error" to "Background task is no longer registered"
++        )
++      )
++      return
++    }
++    Log.d(TAG, "Executing task '${currentTask.name}'")
++    taskManagerUtils.executeTask(currentTask, null, callback)
+   }
+ 
+   override fun didRegister(task: TaskInterface) {

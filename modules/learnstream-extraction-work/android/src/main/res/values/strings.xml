@@ -1,0 +1,6 @@
+<resources>
+  <string name="learnstream_extraction_notification_channel">Material extraction</string>
+  <string name="learnstream_extraction_notification_channel_description">Keeps material extraction running in the background</string>
+  <string name="learnstream_extraction_notification_title">Reading study materials</string>
+  <string name="learnstream_extraction_notification_body">Processing continues while the app is closed</string>
+</resources>

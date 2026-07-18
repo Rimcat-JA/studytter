@@ -1,0 +1,20 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.learnstream'
+version = '1.0.0'
+
+android {
+  namespace 'app.learnstream.extractionwork'
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  implementation 'host.exp.exponent:expo.modules.backgroundtask:57.0.5'
+  implementation 'androidx.work:work-runtime-ktx:2.9.1'
+}

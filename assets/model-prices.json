@@ -1,0 +1,9 @@
+{
+  "note": "Prices change. Edit these estimates in Settings → Usage to match your plan.",
+  "models": {
+    "gpt-5.4-mini": { "inputPerMillion": 0, "outputPerMillion": 0 },
+    "gpt-5.4": { "inputPerMillion": 0, "outputPerMillion": 0 },
+    "claude-sonnet-4-6": { "inputPerMillion": 0, "outputPerMillion": 0 },
+    "claude-haiku-4-5": { "inputPerMillion": 0, "outputPerMillion": 0 }
+  }
+}

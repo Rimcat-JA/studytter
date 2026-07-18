@@ -73,7 +73,3 @@ The simulation prints posterior means and pull counts so bandit convergence and 
 ## Security notes
 
 Never commit API keys. Native provider calls are direct. Web provider support depends on each provider's browser-call policy; native Android is the primary target. Price estimates are informational and visible only under Settings → Usage.
-
-## License
-
-MIT. See [LICENSE](LICENSE).

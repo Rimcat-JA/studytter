@@ -1,0 +1,65 @@
+{
+  "kind": "studytter.learning-package",
+  "schemaVersion": 1,
+  "packageId": "e6b9e06b-10c2-4e12-8faa-9bc8f4f40211",
+  "createdAt": 1788868800000,
+  "subject": {
+    "id": "sample_water",
+    "displayName": "水の性質 / Water",
+    "contentLang": "en",
+    "domainStyle": "mixed",
+    "formatWeights": {
+      "explainer": 1,
+      "quiz": 1,
+      "funfact": 1,
+      "misconception": 1,
+      "comparison": 1,
+      "mnemonic": 1
+    }
+  },
+  "materials": [
+    {
+      "id": "sample_material",
+      "filename": "sample-water.txt",
+      "mimeType": "text/plain"
+    }
+  ],
+  "atoms": [
+    {
+      "topicLabel": "Water",
+      "kind": "fact",
+      "difficulty": 0,
+      "core": "Water freezes at zero degrees Celsius under standard pressure.",
+      "sourceExcerpt": "Water freezes at zero degrees Celsius under standard pressure.",
+      "id": "sample_atom",
+      "materialId": "sample_material",
+      "sourceAnchor": "sample-water.txt, section 1"
+    }
+  ],
+  "posts": [
+    {
+      "format": "explainer",
+      "text": "Water freezes at zero degrees Celsius under standard pressure.",
+      "id": "sample_post_0",
+      "atomId": "sample_atom",
+      "difficulty": 0
+    },
+    {
+      "format": "quiz",
+      "text": "When does water freeze?",
+      "quiz": {
+        "question": "At standard pressure, water freezes at?",
+        "answerText": "0 °C",
+        "explanation": "Water freezes at zero degrees Celsius under standard pressure.",
+        "choices": [
+          "0 °C",
+          "20 °C"
+        ],
+        "answerIndex": 0
+      },
+      "id": "sample_post_1",
+      "atomId": "sample_atom",
+      "difficulty": 0
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import {
   generateText,
   Output,
@@ -12,11 +13,15 @@ import * as SecureStore from "expo-secure-store";
 import { z } from "zod";
 import {
   getProviderConfig,
+  DEFAULT_PROVIDER_CONFIG,
   normalizeBaseUrl,
+  providerName,
+  supportsResponses,
   type ProviderConfig,
   type ProviderId,
 } from "./config";
-import { probeProviderCredentials } from "./credentials";
+import { authenticationHeaders, probeProviderCredentials } from "./credentials";
+import { fetchJson, providerFetch, requestDeadline, sanitizeProviderError } from "./transport";
 
 export type { ProviderId } from "./config";
 export type LlmPart = TextPart | FilePart;
@@ -61,6 +66,7 @@ export interface LlmProvider {
     user: LlmPart[];
     schema: z.ZodType<T>;
     maxTokens: number;
+    abortSignal?: AbortSignal;
   }): Promise<{ data: T; usage: Usage }>;
   streamText(opts: {
     model: string;
@@ -77,13 +83,27 @@ const HEADER_PREFIX = "providerheaders.";
 export async function setApiKey(
   provider: Exclude<ProviderId, "ollama">,
   key: string,
+  baseUrl?: string,
 ): Promise<void> {
-  await SecureStore.setItemAsync(`${KEY_PREFIX}${provider}`, key.trim());
+  if (!key.trim()) throw new Error("API key is empty.");
+  await SecureStore.setItemAsync(`${KEY_PREFIX}${provider}`, JSON.stringify({
+    version: 1, key: key.trim(),
+    baseUrl: normalizeBaseUrl(baseUrl ?? (await getProviderConfig(provider)).baseUrl),
+  }));
+}
+async function storedCredential(provider: Exclude<ProviderId, "ollama">) {
+  const value = await SecureStore.getItemAsync(`${KEY_PREFIX}${provider}`);
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed.version === 1 && typeof parsed.key === "string" && typeof parsed.baseUrl === "string") return parsed as { key: string; baseUrl: string };
+  } catch { /* Legacy unwrapped keys are trusted only at the provider default. */ }
+  return { key: value, baseUrl: DEFAULT_PROVIDER_CONFIG[provider].baseUrl };
 }
 export async function getApiKey(
   provider: Exclude<ProviderId, "ollama">,
 ): Promise<string | null> {
-  return SecureStore.getItemAsync(`${KEY_PREFIX}${provider}`);
+  return (await storedCredential(provider))?.key ?? null;
 }
 export async function deleteApiKey(
   provider: Exclude<ProviderId, "ollama">,
@@ -94,7 +114,9 @@ export async function deleteApiKey(
 export async function setProviderHeaders(
   provider: ProviderId,
   headers: Record<string, string>,
+  baseUrl?: string,
 ): Promise<void> {
+  validateProviderHeaders(headers);
   const entries = Object.entries(headers).filter(
     ([name, value]) => name.trim() && value.trim(),
   );
@@ -104,26 +126,42 @@ export async function setProviderHeaders(
   }
   await SecureStore.setItemAsync(
     `${HEADER_PREFIX}${provider}`,
-    JSON.stringify(Object.fromEntries(entries)),
+    JSON.stringify({ version: 1, headers: Object.fromEntries(entries), baseUrl: normalizeBaseUrl(baseUrl ?? (await getProviderConfig(provider)).baseUrl) }),
   );
 }
 
 export async function getProviderHeaders(
   provider: ProviderId,
 ): Promise<Record<string, string>> {
+  return (await storedHeaders(provider)).headers;
+}
+
+async function storedHeaders(provider: ProviderId): Promise<{ headers: Record<string, string>; baseUrl: string }> {
+  const empty = { headers: {}, baseUrl: DEFAULT_PROVIDER_CONFIG[provider].baseUrl };
   const value = await SecureStore.getItemAsync(`${HEADER_PREFIX}${provider}`);
-  if (!value) return {};
+  if (!value) return empty;
   try {
     const parsed: unknown = JSON.parse(value);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
+      return empty;
+    const record = parsed as Record<string, unknown>;
+    const headers = record.version === 1 && record.headers && typeof record.headers === "object" ? record.headers : parsed;
+    return { headers: Object.fromEntries(
+      Object.entries(headers).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
-    );
+    ), baseUrl: record.version === 1 && typeof record.baseUrl === "string" ? record.baseUrl : empty.baseUrl };
   } catch {
-    return {};
+    return empty;
+  }
+}
+
+export function validateProviderHeaders(headers: Record<string, string>) {
+  for (const [name, value] of Object.entries(headers)) {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || typeof value !== "string" || /[\r\n]/.test(value))
+      throw new Error("追加ヘッダーの名前または値が正しくありません。");
+    if (/^(authorization|x-api-key|x-goog-api-key|host|cookie|content-length)$/i.test(name))
+      throw new Error("認証用ヘッダーはAPIキー欄で設定してください。");
   }
 }
 
@@ -132,10 +170,18 @@ async function runtimeConfig(
   overrides?: ProviderRuntimeOverrides,
 ) {
   const stored = await getProviderConfig(id);
+  const baseUrl = normalizeBaseUrl(overrides?.baseUrl ?? stored.baseUrl);
+  const saved = await storedHeaders(id);
+  const savedHeaders = saved.headers;
+  const headers = overrides?.headers ?? savedHeaders;
+  validateProviderHeaders(headers);
+  if (Object.keys(savedHeaders).length && normalizeBaseUrl(saved.baseUrl) !== baseUrl &&
+      Object.entries(savedHeaders).some(([name, value]) => Object.entries(headers).some(([candidate, supplied]) => candidate.toLowerCase() === name.toLowerCase() && supplied === value)))
+    throw new Error("Base URLを変更したため、追加ヘッダーを消去して新しい接続先の値を入力してください。");
   return {
-    baseUrl: normalizeBaseUrl(overrides?.baseUrl ?? stored.baseUrl),
+    baseUrl,
     protocol: overrides?.protocol ?? stored.protocol,
-    headers: overrides?.headers ?? (await getProviderHeaders(id)),
+    headers,
   };
 }
 
@@ -144,10 +190,13 @@ async function apiKeyFor(
   overrides?: ProviderRuntimeOverrides,
 ): Promise<string> {
   if (id === "ollama") return overrides?.apiKey?.trim() || "ollama";
-  const key =
-    overrides?.apiKey?.trim() ||
-    (await getApiKey(id as Exclude<ProviderId, "ollama">));
+  if (overrides?.apiKey?.trim()) return overrides.apiKey.trim();
+  const credential = await storedCredential(id);
+  const key = credential?.key;
   if (!key) throw new Error(`${providerName(id)} API key is not configured.`);
+  const baseUrl = normalizeBaseUrl(overrides?.baseUrl ?? (await getProviderConfig(id)).baseUrl);
+  if (credential && normalizeBaseUrl(credential.baseUrl) !== baseUrl)
+    throw new Error("API keyの接続先が変更されています。新しいBase URL用のAPIキーを入力してください。");
   return key;
 }
 
@@ -157,12 +206,14 @@ async function modelFor(
   overrides?: ProviderRuntimeOverrides,
 ) {
   const config = await runtimeConfig(id, overrides);
-  const apiKey = await apiKeyFor(id, overrides);
+  const apiKey = await apiKeyFor(id, { ...overrides, baseUrl: config.baseUrl });
+  if (id === "gemini") return createGoogleGenerativeAI({ apiKey, baseURL: config.baseUrl, headers: config.headers, fetch: providerFetch })(modelId);
   if (id === "anthropic")
     return createAnthropic({
       apiKey,
       baseURL: config.baseUrl,
       headers: config.headers,
+      fetch: providerFetch,
       name: "learnstream-anthropic",
     })(modelId);
 
@@ -170,9 +221,10 @@ async function modelFor(
     apiKey,
     baseURL: config.baseUrl,
     headers: config.headers,
+    fetch: providerFetch,
     name: `learnstream-${id}`,
   });
-  if (id === "openai" && config.protocol === "responses")
+  if (supportsResponses(id) && config.protocol === "responses")
     return openAI(modelId);
   return openAI.chat(modelId);
 }
@@ -190,8 +242,11 @@ export function createProvider(
       user: LlmPart[];
       schema: z.ZodType<T>;
       maxTokens: number;
+      abortSignal?: AbortSignal;
     }) {
       const model = await modelFor(id, opts.model, overrides);
+      const deadline = requestDeadline(90_000, opts.abortSignal);
+      try {
       const result = await generateText({
         model,
         system: opts.system,
@@ -201,28 +256,43 @@ export function createProvider(
         // Extraction has a separate schema-correction retry. Keep transport
         // retries bounded so a temporary outage does not fan out excessively.
         maxRetries: 1,
+        abortSignal: deadline.signal,
       });
       if (!result.output)
         throw new Error("The provider returned no structured output.");
       return {
-        data: result.output as T,
+        data: opts.schema.parse(result.output),
         usage: {
           inputTokens: result.usage.inputTokens ?? 0,
           outputTokens: result.usage.outputTokens ?? 0,
         },
       };
+      } catch (error) {
+        if (deadline.signal.aborted) throw deadline.signal.reason ?? error;
+        throw sanitizeProviderError(error);
+      } finally { deadline.dispose(); }
     },
     async *streamText(opts) {
       const model = await modelFor(id, opts.model, overrides);
+      const deadline = requestDeadline(120_000, opts.abortSignal);
+      try {
       const result = streamText({
         model,
         system: opts.system,
         messages: [{ role: "user", content: opts.user as UserContent }],
         maxRetries: 1,
-        abortSignal: opts.abortSignal,
+        abortSignal: deadline.signal,
         maxOutputTokens: opts.maxTokens,
       });
-      for await (const chunk of result.textStream) yield chunk;
+      for await (const part of result.fullStream) {
+        if (part.type === "error") throw part.error;
+        if (part.type === "text-delta") yield part.text;
+      }
+      if (deadline.signal.aborted) throw deadline.signal.reason;
+      } catch (error) {
+        if (deadline.signal.aborted) throw deadline.signal.reason ?? error;
+        throw sanitizeProviderError(error);
+      } finally { deadline.dispose(); }
     },
   };
 }
@@ -232,6 +302,8 @@ export async function testProviderConnection(
   model: string,
   overrides?: ProviderRuntimeOverrides,
 ): Promise<boolean> {
+  const { captureDatabaseGeneration } = await import("../db/database");
+  const generation = captureDatabaseGeneration();
   const provider = createProvider(id, overrides);
   const schema = z.object({ ok: z.boolean() });
   const result = await provider.generateJson({
@@ -242,7 +314,7 @@ export async function testProviderConnection(
     maxTokens: 40,
   });
   const { logUsage } = await import("./usage");
-  await logUsage(id, model, "generation", result.usage);
+  await logUsage(id, model, "generation", result.usage, generation);
   return result.data.ok;
 }
 
@@ -255,7 +327,7 @@ export async function testProviderCredentials(
   overrides?: ProviderRuntimeOverrides,
 ): Promise<boolean> {
   const config = await runtimeConfig(id, overrides);
-  const apiKey = await apiKeyFor(id, overrides);
+  const apiKey = await apiKeyFor(id, { ...overrides, baseUrl: config.baseUrl });
   await probeProviderCredentials({
     providerId: id,
     baseUrl: config.baseUrl,
@@ -277,6 +349,8 @@ export async function testProviderPdfConnection(
   model: string,
   overrides?: ProviderRuntimeOverrides,
 ): Promise<boolean> {
+  const { captureDatabaseGeneration } = await import("../db/database");
+  const generation = captureDatabaseGeneration();
   const provider = createProvider(id, overrides);
   const schema = z.object({ marker: z.literal(PDF_PROBE_MARKER) });
   const result = await provider.generateJson({
@@ -296,7 +370,7 @@ export async function testProviderPdfConnection(
     maxTokens: 80,
   });
   const { logUsage } = await import("./usage");
-  await logUsage(id, model, "extraction", result.usage);
+  await logUsage(id, model, "extraction", result.usage, generation);
   return result.data.marker === PDF_PROBE_MARKER;
 }
 
@@ -417,36 +491,20 @@ function parseModels(payload: unknown): ProviderModel[] {
   return [...models.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function providerName(id: ProviderId) {
-  if (id === "openai") return "OpenAI";
-  if (id === "anthropic") return "Anthropic";
-  if (id === "nanogpt") return "NanoGPT";
-  return "Ollama";
-}
-
 export async function listProviderModels(
   id: ProviderId,
   overrides?: ProviderRuntimeOverrides,
 ): Promise<ProviderModel[]> {
   const config = await runtimeConfig(id, overrides);
-  const apiKey = await apiKeyFor(id, overrides);
+  const apiKey = await apiKeyFor(id, { ...overrides, baseUrl: config.baseUrl });
   const url = `${config.baseUrl}/models${id === "nanogpt" ? "?detailed=true" : ""}`;
-  const authenticationHeaders: Record<string, string> =
-    id === "anthropic"
-      ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
-      : id === "ollama"
-        ? {}
-        : { Authorization: `Bearer ${apiKey}` };
-  const response = await fetch(url, {
-    headers: { ...authenticationHeaders, ...config.headers },
+  const payload = await fetchJson(url, {
+    headers: { ...config.headers, ...authenticationHeaders(id, apiKey) },
   });
-  if (!response.ok) {
-    const body = (await response.text()).slice(0, 400);
-    throw new Error(
-      `${providerName(id)} model list failed (${response.status})${body ? `: ${body}` : ""}`,
-    );
-  }
-  const models = parseModels(await response.json());
+  const models = parseModels(payload).map((item) => id === "gemini" ? {
+    ...item, id: item.id.replace(/^models\//, ""),
+    pdfInput: /^models\/gemini-|^gemini-/.test(item.id), imageInput: /^models\/gemini-|^gemini-/.test(item.id),
+  } : item);
   if (!models.length)
     throw new Error(`${providerName(id)}からモデル一覧が返されませんでした。`);
   return models;

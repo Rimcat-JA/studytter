@@ -3,48 +3,32 @@ import { difficultyFit } from "../core/irt";
 import { interleave, rankPosts } from "../core/ranker";
 import { urgency } from "../core/srs";
 import type { Format } from "../core/config";
-import { getDb, listFeed, type PostRow } from "../db/database";
+import { getDb, type PostRow } from "../db/database";
+import { selectFeedCandidates, type FeedOptions } from "../db/feed-candidates";
 
-export async function loadRankedFeed(subjectId?: string): Promise<PostRow[]> {
+export async function loadRankedFeed(subjectId?: string, options: FeedOptions = {}): Promise<PostRow[]> {
   const db = await getDb();
-  const posts = await listFeed(subjectId);
+  const posts = await selectFeedCandidates(db, subjectId, options);
   const interactions = await db.getFirstAsync<{ count: number }>(
     "SELECT COUNT(*) count FROM interactions",
   );
-  const rankable = await Promise.all(
-    posts.map(async (post) => {
-      const arm = (await db.getFirstAsync<{ alpha: number; beta: number }>(
-        "SELECT alpha,beta FROM bandit_arms WHERE topic_key=? AND format=?",
-        post.topic_key,
-        post.format,
-      )) ?? { alpha: 1, beta: 1 };
-      const memory = (await db.getFirstAsync<{
-        stability_days: number;
-        last_reviewed_at: number | null;
-      }>(
-        "SELECT stability_days,last_reviewed_at FROM atom_memory WHERE atom_id=?",
-        post.atom_id,
-      )) ?? { stability_days: 1, last_reviewed_at: null };
-      const topic = (await db.getFirstAsync<{ theta: number }>(
-        "SELECT theta FROM user_topic_state WHERE topic_key=?",
-        post.topic_key,
-      )) ?? { theta: 0 };
-      return {
-        ...post,
-        subjectId: post.subject_id,
-        atomId: post.atom_id,
-        topicKey: post.topic_key,
-        format: post.format as Format,
-        difficultyB: post.difficulty_b,
-        createdAt: post.created_at,
-        engagement: sampleBeta(arm.alpha, arm.beta),
-        urgency: urgency({
-          stabilityDays: memory.stability_days,
-          lastReviewedAt: memory.last_reviewed_at,
-        }),
-        difficultyFit: difficultyFit(topic.theta, post.difficulty_b),
-      };
-    }),
-  );
-  return interleave(rankPosts(rankable), interactions?.count ?? 0);
+  const now = Date.now();
+  const rankable = posts.map((post) => ({
+    ...post,
+    subjectId: post.subject_id,
+    atomId: post.atom_id,
+    topicKey: post.topic_key,
+    format: post.format as Format,
+    difficultyB: post.difficulty_b,
+    createdAt: post.created_at,
+    engagement: sampleBeta(post.alpha, post.beta),
+    urgency: urgency({ stabilityDays: post.stability_days, lastReviewedAt: post.last_reviewed_at }, now),
+    difficultyFit: difficultyFit(post.theta, post.difficulty_b),
+    display_name: post.format === "entertainment" ? "Study Break" : post.display_name,
+    handle: post.format === "entertainment" ? "@learnstream_break" : post.handle,
+    avatar_seed: post.format === "entertainment" ? "entertainer" : post.avatar_seed,
+  }));
+  // A saved break card must remain reachable even with no saved learning cards.
+  if (options.savedOnly) return rankable.sort((a, b) => b.created_at - a.created_at);
+  return interleave(rankPosts(rankable, [], now), interactions?.count ?? 0);
 }

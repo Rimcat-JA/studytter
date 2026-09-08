@@ -16,6 +16,9 @@ import {
   PROVIDER_IDS,
   getProviderConfig,
   getPurposeRoute,
+  normalizeBaseUrl,
+  providerName,
+  supportsResponses,
   setProviderConfig,
   setPurposeRoute,
   type LlmPurpose,
@@ -33,6 +36,7 @@ import {
   setApiKey,
   setProviderHeaders,
   testProviderCredentials,
+  validateProviderHeaders,
   type ProviderDiagnostic,
   type ProviderModel,
   type ProviderRuntimeOverrides,
@@ -60,32 +64,9 @@ type Profiles = Record<ProviderId, ProfileDraft>;
 type Routes = Record<LlmPurpose, PurposeRoute>;
 type ModelLists = Record<ProviderId, ProviderModel[]>;
 
-const initialProfiles: Profiles = {
-  openai: {
-    ...DEFAULT_PROVIDER_CONFIG.openai,
-    apiKey: "",
-    configured: false,
-    headersText: "",
-  },
-  anthropic: {
-    ...DEFAULT_PROVIDER_CONFIG.anthropic,
-    apiKey: "",
-    configured: false,
-    headersText: "",
-  },
-  nanogpt: {
-    ...DEFAULT_PROVIDER_CONFIG.nanogpt,
-    apiKey: "",
-    configured: false,
-    headersText: "",
-  },
-  ollama: {
-    ...DEFAULT_PROVIDER_CONFIG.ollama,
-    apiKey: "",
-    configured: true,
-    headersText: "",
-  },
-};
+const initialProfiles = Object.fromEntries(PROVIDER_IDS.map((id) => [id, {
+  ...DEFAULT_PROVIDER_CONFIG[id], apiKey: "", configured: id === "ollama", headersText: "",
+}])) as Profiles;
 const initialRoutes: Routes = {
   extraction: {
     providerId: "openai",
@@ -100,12 +81,7 @@ const initialRoutes: Routes = {
     model: DEFAULT_MODELS.openai.deepdive,
   },
 };
-const emptyModelLists: ModelLists = {
-  openai: [],
-  anthropic: [],
-  nanogpt: [],
-  ollama: [],
-};
+const emptyModelLists = Object.fromEntries(PROVIDER_IDS.map((id) => [id, [] as ProviderModel[]])) as ModelLists;
 const purposeLabelKeys: Record<LlmPurpose, string> = {
   extraction: "purposeExtraction",
   generation: "purposeGeneration",
@@ -127,7 +103,9 @@ function parseHeaders(value: string): Record<string, string> {
   const entries = Object.entries(parsed);
   if (entries.some(([name, value]) => !name.trim() || typeof value !== "string"))
     throw new Error("追加ヘッダーの名前と値は文字列で入力してください。");
-  return Object.fromEntries(entries) as Record<string, string>;
+  const headers = Object.fromEntries(entries) as Record<string, string>;
+  validateProviderHeaders(headers);
+  return headers;
 }
 
 function runtimeOverrides(profile: ProfileDraft): ProviderRuntimeOverrides {
@@ -186,8 +164,8 @@ export default function Providers() {
 
   useFocusEffect(
     useCallback(() => {
-      void load();
-    }, [load]),
+      void load().catch((error) => Alert.alert(t("settingsSaveFailed"), formatProviderError(error)));
+    }, [load, t]),
   );
 
   const profile = profiles[selectedProvider];
@@ -266,7 +244,10 @@ export default function Providers() {
         runtimeOverrides(profiles[providerId]),
       );
       if (profiles[providerId].apiKey.trim()) {
-        await setApiKey(providerId, profiles[providerId].apiKey);
+        const draft = profiles[providerId];
+        await setApiKey(providerId, draft.apiKey, draft.baseUrl);
+        await setProviderHeaders(providerId, parseHeaders(draft.headersText), draft.baseUrl);
+        await setProviderConfig(providerId, draft);
         setProfiles((current) => ({
           ...current,
           [providerId]: {
@@ -287,13 +268,23 @@ export default function Providers() {
   const save = async () => {
     setBusy("save");
     try {
+      // Validate every draft before saving any profile or route.
+      for (const providerId of PROVIDER_IDS) {
+        normalizeBaseUrl(profiles[providerId].baseUrl);
+        parseHeaders(profiles[providerId].headersText);
+        const current = await getProviderConfig(providerId);
+        if (providerId !== "ollama" && profiles[providerId].configured && !profiles[providerId].apiKey.trim() && normalizeBaseUrl(current.baseUrl) !== normalizeBaseUrl(profiles[providerId].baseUrl))
+          throw new Error(`${providerName(providerId)}: Base URLを変更する場合はAPIキーを再入力してください。`);
+      }
+      for (const purpose of LLM_PURPOSES)
+        if (!routes[purpose].model.trim()) throw new Error("モデル名を入力してください。");
       for (const providerId of PROVIDER_IDS) {
         const draft = profiles[providerId];
         const headers = parseHeaders(draft.headersText);
-        await setProviderConfig(providerId, draft);
-        await setProviderHeaders(providerId, headers);
+        await setProviderHeaders(providerId, headers, draft.baseUrl);
         if (providerId !== "ollama" && draft.apiKey.trim())
-          await setApiKey(providerId, draft.apiKey);
+          await setApiKey(providerId, draft.apiKey, draft.baseUrl);
+        await setProviderConfig(providerId, draft);
       }
       for (const purpose of LLM_PURPOSES)
         await setPurposeRoute(purpose, routes[purpose]);
@@ -329,7 +320,7 @@ export default function Providers() {
           onChange={setSelectedProvider}
         />
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>{providerLabel(selectedProvider)}</Text>
+          <Text style={styles.cardTitle}>{providerName(selectedProvider)}</Text>
           {selectedProvider !== "ollama" && (
             <>
               <Text style={commonStyles.label}>
@@ -357,7 +348,7 @@ export default function Providers() {
             keyboardType="url"
           />
 
-          {selectedProvider === "openai" && (
+          {supportsResponses(selectedProvider) && (
             <>
               <Text style={commonStyles.label}>{t("apiProtocol")}</Text>
               <View style={styles.protocols}>
@@ -504,7 +495,7 @@ function ProviderChips({
           style={[styles.tab, value === id && styles.active]}
         >
           <Text style={[styles.tabText, value === id && styles.activeText]}>
-            {id === "nanogpt" ? "Nano" : providerLabel(id)}
+            {providerName(id)}
           </Text>
         </Pressable>
       ))}
@@ -530,7 +521,7 @@ function RouteEditor({
   const { t } = useTranslation();
   const capable =
     purpose === "extraction"
-      ? models.filter((model) => model.pdfInput || model.imageInput)
+      ? models.filter((model) => model.pdfInput !== false || model.imageInput !== false)
       : models;
   const catalog = purpose === "extraction" ? capable : models;
   const query = route.model.trim().toLowerCase();
@@ -634,13 +625,6 @@ function DiagnosticCard({ result }: { result: ProviderDiagnostic }) {
   );
 }
 
-function providerLabel(providerId: ProviderId) {
-  if (providerId === "openai") return "OpenAI";
-  if (providerId === "anthropic") return "Anthropic";
-  if (providerId === "nanogpt") return "NanoGPT";
-  return "Ollama";
-}
-
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 14, paddingBottom: 48 },
   back: { color: colors.text, fontSize: 35 },
@@ -656,12 +640,13 @@ const styles = StyleSheet.create({
   cardTitle: { color: colors.text, fontSize: 17, fontWeight: "900" },
   tabs: {
     flexDirection: "row",
+    flexWrap: "wrap",
     backgroundColor: colors.bg,
     padding: 4,
     borderRadius: 12,
     gap: 2,
   },
-  tab: { flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 9 },
+  tab: { minWidth: 90, flexGrow: 1, paddingHorizontal: 8, paddingVertical: 10, alignItems: "center", borderRadius: 9 },
   active: { backgroundColor: colors.blue },
   tabText: { color: colors.muted, fontSize: 11, fontWeight: "800" },
   activeText: { color: "white" },

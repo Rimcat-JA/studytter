@@ -5,6 +5,9 @@ export const PROVIDER_IDS = [
   "openai",
   "anthropic",
   "nanogpt",
+  "openrouter",
+  "gemini",
+  "custom",
   "ollama",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
@@ -39,6 +42,9 @@ export const DEFAULT_PROVIDER_CONFIG: Record<ProviderId, ProviderConfig> = {
     baseUrl: "https://nano-gpt.com/api/subscription/v1",
     protocol: "chat",
   },
+  openrouter: { baseUrl: "https://openrouter.ai/api/v1", protocol: "chat" },
+  gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta", protocol: "chat" },
+  custom: { baseUrl: "https://api.example.com/v1", protocol: "chat" },
   ollama: {
     baseUrl: Platform.OS === "android" ? androidOllamaUrl : localOllamaUrl,
     protocol: "chat",
@@ -61,6 +67,17 @@ export const DEFAULT_MODELS: Record<ProviderId, Record<LlmPurpose, string>> = {
     generation: "deepseek-chat",
     deepdive: "deepseek-chat",
   },
+  openrouter: {
+    extraction: "google/gemini-2.5-flash",
+    generation: "openai/gpt-5.4-mini",
+    deepdive: "openai/gpt-5.4-mini",
+  },
+  gemini: {
+    extraction: "gemini-2.5-flash",
+    generation: "gemini-2.5-flash",
+    deepdive: "gemini-2.5-flash",
+  },
+  custom: { extraction: "", generation: "", deepdive: "" },
   ollama: {
     extraction: "",
     generation: "llama3.2",
@@ -86,8 +103,17 @@ export function normalizeBaseUrl(value: string): string {
   }
   if (url.protocol !== "https:" && url.protocol !== "http:")
     throw new Error("Base URLはhttp://またはhttps://で始めてください。");
-  return normalized;
+  if (url.username || url.password || url.search || url.hash)
+    throw new Error("Base URLに認証情報・クエリ・フラグメントは含められません。");
+  return url.toString().replace(/\/+$/, "");
 }
+
+export const providerName = (id: ProviderId): string => ({
+  openai: "OpenAI", anthropic: "Anthropic", nanogpt: "NanoGPT",
+  openrouter: "OpenRouter", gemini: "Gemini", custom: "OpenAI互換", ollama: "Ollama",
+})[id];
+
+export const supportsResponses = (id: ProviderId) => id === "openai" || id === "custom";
 
 export async function getProviderConfig(
   providerId: ProviderId,
@@ -100,7 +126,7 @@ export async function getProviderConfig(
       ? await getSetting("ollamaBaseUrl", defaults.baseUrl)
       : defaults.baseUrl;
   const storedProtocol =
-    providerId === "openai"
+    supportsResponses(providerId)
       ? await getSetting<unknown>(
           providerConfigKey(providerId, "protocol"),
           defaults.protocol,
@@ -112,7 +138,7 @@ export async function getProviderConfig(
       legacyBaseUrl,
     ),
     protocol:
-      providerId === "openai"
+      supportsResponses(providerId)
         ? storedProtocol === "chat"
           ? "chat"
           : "responses"
@@ -125,7 +151,8 @@ export async function setProviderConfig(
   config: ProviderConfig,
 ): Promise<void> {
   const baseUrl = normalizeBaseUrl(config.baseUrl);
-  const protocol = providerId === "openai" ? config.protocol : "chat";
+  const protocol = supportsResponses(providerId) ? config.protocol : "chat";
+  if (protocol !== "chat" && protocol !== "responses") throw new Error("API protocol is invalid.");
   await setSetting(providerConfigKey(providerId, "baseUrl"), baseUrl);
   await setSetting(providerConfigKey(providerId, "protocol"), protocol);
   if (providerId === "ollama") await setSetting("ollamaBaseUrl", baseUrl);
@@ -171,6 +198,7 @@ export async function setPurposeRoute(
   purpose: LlmPurpose,
   route: PurposeRoute,
 ): Promise<void> {
+  if (!isProviderId(route.providerId)) throw new Error("Provider is invalid.");
   if (purpose === "extraction" && route.providerId === "ollama")
     throw new Error("OllamaはPDF・画像の抽出には利用できません。");
   if (!route.model.trim()) throw new Error("モデル名を入力してください。");

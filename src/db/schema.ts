@@ -5,6 +5,7 @@ import {
   real,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 export const subjects = sqliteTable("subjects", {
@@ -88,6 +89,18 @@ export const interactions = sqliteTable("interactions", {
   dwellMs: integer("dwell_ms"),
   createdAt: integer("created_at").notNull(),
 });
+export const quizAttempts = sqliteTable("quiz_attempts", {
+  id: text("id").primaryKey(),
+  postId: text("post_id").notNull(),
+  sessionKey: text("session_key").notNull(),
+  answerIndex: integer("answer_index"),
+  correct: integer("correct").notNull(),
+  createdAt: integer("created_at").notNull(),
+  nextReviewAt: integer("next_review_at").notNull(),
+}, (table) => [
+  uniqueIndex("quiz_attempts_post_session_idx").on(table.postId, table.sessionKey),
+  index("quiz_attempts_post_time_idx").on(table.postId, table.createdAt),
+]);
 export const banditArms = sqliteTable(
   "bandit_arms",
   {

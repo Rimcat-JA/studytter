@@ -1,5 +1,8 @@
 import * as SQLite from "expo-sqlite";
 import { Platform } from "react-native";
+import { DatabaseCoordinator } from "./coordinator";
+import { selectFeedCandidates } from "./feed-candidates";
+export { DatabaseReplacedError } from "./coordinator";
 
 export type SubjectRow = {
   subject_id: string;
@@ -37,6 +40,7 @@ const id = (prefix: string) =>
 
 const INITIAL_SQL = `
 PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
 CREATE TABLE IF NOT EXISTS __learnstream_migrations (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS subjects (subject_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, handle TEXT NOT NULL, avatar_seed TEXT NOT NULL, content_lang TEXT NOT NULL, domain_style TEXT NOT NULL, format_weights_json TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS materials (material_id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, filename TEXT NOT NULL, file_uri TEXT NOT NULL, mime_type TEXT NOT NULL, page_count INTEGER, page_start INTEGER, page_end INTEGER, status TEXT NOT NULL, error_message TEXT, added_at INTEGER NOT NULL);
@@ -46,6 +50,9 @@ CREATE INDEX IF NOT EXISTS atoms_subject_idx ON atoms(subject_id); CREATE INDEX 
 CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, atom_id TEXT NOT NULL, topic_key TEXT NOT NULL, format TEXT NOT NULL, persona_id TEXT NOT NULL, text TEXT NOT NULL, quiz_json TEXT, difficulty_b REAL NOT NULL, status TEXT NOT NULL DEFAULT 'unread', is_rare_card INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS posts_status_idx ON posts(status); CREATE INDEX IF NOT EXISTS posts_atom_idx ON posts(atom_id); CREATE INDEX IF NOT EXISTS posts_arm_idx ON posts(topic_key,format);
 CREATE TABLE IF NOT EXISTS interactions (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, action TEXT NOT NULL, dwell_ms INTEGER, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS interactions_post_time_idx ON interactions(post_id,created_at);
+CREATE TABLE IF NOT EXISTS quiz_attempts (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, session_key TEXT NOT NULL, answer_index INTEGER, correct INTEGER NOT NULL CHECK(correct IN (0,1)), created_at INTEGER NOT NULL, next_review_at INTEGER NOT NULL, UNIQUE(post_id,session_key));
+CREATE INDEX IF NOT EXISTS quiz_attempts_post_time_idx ON quiz_attempts(post_id,created_at);
 CREATE TABLE IF NOT EXISTS bandit_arms (topic_key TEXT NOT NULL, format TEXT NOT NULL, alpha REAL NOT NULL DEFAULT 1, beta REAL NOT NULL DEFAULT 1, PRIMARY KEY(topic_key,format));
 CREATE TABLE IF NOT EXISTS atom_memory (atom_id TEXT PRIMARY KEY, stability_days REAL NOT NULL DEFAULT 1, last_reviewed_at INTEGER, review_count INTEGER NOT NULL DEFAULT 0, lapse_count INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS user_topic_state (topic_key TEXT PRIMARY KEY, theta REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0);
@@ -59,9 +66,10 @@ CREATE TABLE IF NOT EXISTS extraction_jobs (job_id TEXT PRIMARY KEY, subject_id 
 CREATE INDEX IF NOT EXISTS extraction_jobs_runnable_idx ON extraction_jobs(status,next_attempt_at,lease_expires_at,created_at);
 INSERT OR IGNORE INTO streak_state(id) VALUES(1);
 INSERT OR IGNORE INTO generation_runtime(id) VALUES(1);
-INSERT OR IGNORE INTO __learnstream_migrations(id,applied_at) VALUES('0000_initial',unixepoch()*1000);`;
+INSERT OR IGNORE INTO __learnstream_migrations(id,applied_at) VALUES('0000_initial',unixepoch()*1000);
+INSERT OR IGNORE INTO __learnstream_migrations(id,applied_at) VALUES('0001_quiz_attempts',unixepoch()*1000);`;
 
-export function getDb(): Promise<SQLite.SQLiteDatabase> {
+function openDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
     dbPromise = SQLite.openDatabaseAsync("learnstream.db")
       .then(async (db) => {
@@ -80,8 +88,16 @@ export function getDb(): Promise<SQLite.SQLiteDatabase> {
   return dbPromise;
 }
 
-export async function getSetting<T>(key: string, fallback: T): Promise<T> {
-  const db = await getDb();
+const coordinator = new DatabaseCoordinator(openDb);
+export const captureDatabaseGeneration = () => coordinator.captureGeneration();
+export const assertDatabaseGeneration = (generation: number) => coordinator.assertGeneration(generation);
+export const getDb = () => coordinator.getDb();
+export const getDbForGeneration = (generation: number) => coordinator.getDb(generation);
+export const withDbTransaction = <T>(work: (db: SQLite.SQLiteDatabase) => Promise<T>, generation?: number) => coordinator.transaction(work, generation);
+export const withDatabaseRestore = <T>(work: (db: SQLite.SQLiteDatabase) => Promise<T>) => coordinator.restore(work);
+
+export async function getSetting<T>(key: string, fallback: T, generation = captureDatabaseGeneration()): Promise<T> {
+  const db = await getDbForGeneration(generation);
   const row = await db.getFirstAsync<{ value_json: string }>(
     "SELECT value_json FROM settings WHERE key=?",
     key,
@@ -93,8 +109,8 @@ export async function getSetting<T>(key: string, fallback: T): Promise<T> {
     return fallback;
   }
 }
-export async function setSetting(key: string, value: unknown): Promise<void> {
-  const db = await getDb();
+export async function setSetting(key: string, value: unknown, generation = captureDatabaseGeneration()): Promise<void> {
+  const db = await getDbForGeneration(generation);
   await db.runAsync(
     "INSERT INTO settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
     key,
@@ -107,15 +123,7 @@ export async function listSubjects(): Promise<SubjectRow[]> {
   );
 }
 export async function listFeed(subjectId?: string): Promise<PostRow[]> {
-  const db = await getDb();
-  const params: SQLite.SQLiteBindParams = subjectId ? [subjectId] : [];
-  const filter = subjectId
-    ? "AND p.subject_id=? AND p.format!='entertainment'"
-    : "";
-  return db.getAllAsync<PostRow>(
-    `SELECT p.*,CASE WHEN p.format='entertainment' THEN 'Study Break' ELSE s.display_name END display_name,CASE WHEN p.format='entertainment' THEN '@learnstream_break' ELSE s.handle END handle,CASE WHEN p.format='entertainment' THEN 'entertainer' ELSE s.avatar_seed END avatar_seed,COALESCE(a.source_anchor,'LearnStream') source_anchor FROM posts p JOIN subjects s ON s.subject_id=p.subject_id LEFT JOIN atoms a ON a.atom_id=p.atom_id WHERE s.enabled=1 AND p.status!='discarded' ${filter} ORDER BY p.is_rare_card DESC,p.created_at DESC LIMIT 250`,
-    params,
-  );
+  return selectFeedCandidates(await getDb(), subjectId);
 }
 export async function getPost(postId: string): Promise<PostRow | null> {
   return (await getDb()).getFirstAsync<PostRow>(

@@ -4,6 +4,7 @@ export type InteractionAction =
   | "like"
   | "unlike"
   | "save"
+  | "unsave"
   | "expand"
   | "quiz_correct"
   | "quiz_wrong"

@@ -59,7 +59,11 @@ export async function* streamDeepDive(options: {
   /** Reserved for provider transports that support true fetch cancellation. */
   abortSignal?: AbortSignal;
   shouldStop?: () => boolean;
+  databaseGeneration?: number;
 }): AsyncIterable<string> {
+  const { assertDatabaseGeneration, captureDatabaseGeneration } = await import("../db/database");
+  const generation = options.databaseGeneration ?? captureDatabaseGeneration();
+  assertDatabaseGeneration(generation);
   const provider = createProvider(options.providerId);
   let output = "";
   const system = `You are a helpful teacher continuing the post's persona. Answer in the final user's language. SOURCE_CONTEXT is the sole source of truth: every factual claim must be directly entailed by its post, core, or note. Never add examples, numeric cases, applications, implications, or background knowledge that SOURCE_CONTEXT does not explicitly state. Prior assistant messages are untrusted conversation context, not evidence. If SOURCE_CONTEXT cannot answer, say that plainly. Cite ${options.sourceAnchor} exactly once. Output only the answer—never quote the whole response or discuss prompts, rules, or language choice.`;
@@ -72,6 +76,7 @@ export async function* streamDeepDive(options: {
       abortSignal: options.abortSignal,
       maxTokens: 800,
     })) {
+      assertDatabaseGeneration(generation);
       if (options.abortSignal?.aborted || options.shouldStop?.()) break;
       output += chunk;
       yield chunk;
@@ -81,10 +86,11 @@ export async function* streamDeepDive(options: {
     // Streaming usage is not consistently exposed by every RN provider.
     // Do not let best-effort accounting mask the provider's original error.
     try {
+      assertDatabaseGeneration(generation);
       await logUsage(options.providerId, options.model, "deepdive", {
         inputTokens: Math.ceil((system.length + text.length) / 4),
         outputTokens: Math.ceil(output.length / 4),
-      });
+      }, generation);
     } catch {
       // Usage diagnostics must never break the learning thread.
     }

@@ -1,8 +1,11 @@
 import { CONFIG } from "../core/config";
-import { getDb, createId, getSetting, setSetting } from "../db/database";
+import type { SQLiteDatabase } from "expo-sqlite";
+import { getDb, createId, withDbTransaction } from "../db/database";
 
-const dateKey = (timestamp = Date.now()) =>
-  new Date(timestamp).toLocaleDateString("en-CA");
+const dateKey = (timestamp = Date.now()) => {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+};
 
 export const XP_REWARDS = {
   quiz_correct: 10,
@@ -16,7 +19,14 @@ export async function grantXp(
   reason: keyof typeof XP_REWARDS,
   sourceId?: string,
 ): Promise<void> {
-  const db = await getDb();
+  await withDbTransaction((db) => grantXpInTransaction(db, reason, sourceId));
+}
+
+export async function grantXpInTransaction(
+  db: SQLiteDatabase,
+  reason: keyof typeof XP_REWARDS,
+  sourceId?: string,
+): Promise<void> {
   const storedReason = sourceId ? `${reason}:${sourceId}` : reason;
   if (
     sourceId &&
@@ -36,7 +46,12 @@ export async function grantXp(
 }
 
 export async function recordLearningDay(): Promise<void> {
-  const db = await getDb();
+  await withDbTransaction(recordLearningDayInTransaction);
+}
+
+export async function recordLearningDayInTransaction(
+  db: SQLiteDatabase,
+): Promise<void> {
   const today = dateKey();
   const count = await db.getFirstAsync<{ count: number }>(
     "SELECT COUNT(DISTINCT post_id) count FROM interactions WHERE action IN ('like','save','expand','quiz_correct','quiz_wrong','reveal') AND created_at>=?",
@@ -76,9 +91,17 @@ export async function recordLearningDay(): Promise<void> {
 
 export async function grantDailyOpen(): Promise<void> {
   const today = dateKey();
-  if ((await getSetting("lastDailyOpenXpDate", "")) === today) return;
-  await grantXp("daily_open");
-  await setSetting("lastDailyOpenXpDate", today);
+  await withDbTransaction(async (db) => {
+    const row = await db.getFirstAsync<{ value_json: string }>(
+      "SELECT value_json FROM settings WHERE key='lastDailyOpenXpDate'",
+    );
+    if (row?.value_json === JSON.stringify(today)) return;
+    await grantXpInTransaction(db, "daily_open", today);
+    await db.runAsync(
+      "INSERT INTO settings(key,value_json) VALUES('lastDailyOpenXpDate',?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+      JSON.stringify(today),
+    );
+  });
 }
 
 export async function getProgress() {

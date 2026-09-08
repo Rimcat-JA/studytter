@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createImportSchema } from "../services/backup-schema";
 
 export const ContentLangSchema = z.enum(["ja", "en", "zh-Hans"]);
 export const AtomKindSchema = z.enum([
@@ -50,12 +51,21 @@ export const ExtractionChunkSchema = z.object({
 
 export type ExtractionChunk = z.infer<typeof ExtractionChunkSchema>;
 
-const QuizSchema = z.object({
-  question: z.string(),
-  choices: z.array(z.string()).min(2).max(6).optional(),
+export const QuizSchema = z.object({
+  question: z.string().trim().min(1),
+  choices: z.array(z.string().trim().min(1)).min(2).max(6).optional(),
   answerIndex: z.number().int().nonnegative().optional(),
-  answerText: z.string(),
-  explanation: z.string(),
+  answerText: z.string().trim().min(1),
+  explanation: z.string().trim().min(1),
+}).superRefine((quiz, context) => {
+  if (quiz.choices) {
+    if (quiz.answerIndex === undefined || quiz.answerIndex >= quiz.choices.length)
+      context.addIssue({ code: "custom", path: ["answerIndex"], message: "Quiz validation: answerIndex must identify an existing choice." });
+    if (new Set(quiz.choices.map((choice) => choice.toLocaleLowerCase())).size !== quiz.choices.length)
+      context.addIssue({ code: "custom", path: ["choices"], message: "Quiz validation: choices must be distinct." });
+  } else if (quiz.answerIndex !== undefined) {
+    context.addIssue({ code: "custom", path: ["answerIndex"], message: "Quiz validation: answerIndex requires choices." });
+  }
 });
 export const GeneratedPostsSchema = z.object({
   posts: z
@@ -71,21 +81,19 @@ export const GeneratedPostsSchema = z.object({
 });
 export type GeneratedPosts = z.infer<typeof GeneratedPostsSchema>;
 
-export const ImportSchema = z.object({
-  schemaVersion: z.literal(2),
-  exportedAt: z.number(),
-  subjects: z.array(z.record(z.string(), z.unknown())),
-  materials: z.array(z.record(z.string(), z.unknown())),
-  atoms: z.array(z.record(z.string(), z.unknown())),
-  posts: z.array(z.record(z.string(), z.unknown())),
-  interactions: z.array(z.record(z.string(), z.unknown())),
-  banditArms: z.array(z.record(z.string(), z.unknown())),
-  atomMemory: z.array(z.record(z.string(), z.unknown())),
-  userTopicState: z.array(z.record(z.string(), z.unknown())),
-  streakState: z.array(z.record(z.string(), z.unknown())),
-  xpEvents: z.array(z.record(z.string(), z.unknown())),
-  deepdives: z.array(z.record(z.string(), z.unknown())),
-  settings: z.array(z.record(z.string(), z.unknown())),
-  usageLog: z.array(z.record(z.string(), z.unknown())),
-  originalFilesIncluded: z.literal(false),
-});
+/** Validate the whole reply before any post is written to the database. */
+export function validateGeneratedPosts(data: unknown, formats: readonly string[]): GeneratedPosts {
+  const parsed = GeneratedPostsSchema.parse(data);
+  const indexes = new Set(parsed.posts.map((post) => post.jobIndex));
+  if (parsed.posts.length !== formats.length || indexes.size !== formats.length || formats.some((_, index) => !indexes.has(index)))
+    throw new Error("Generated posts validation failed: each jobIndex must occur exactly once.");
+  for (const post of parsed.posts) {
+    if (formats[post.jobIndex] === "quiz" && !post.quiz)
+      throw new Error(`Generated posts validation failed: quiz is required for jobIndex ${post.jobIndex}.`);
+    if (formats[post.jobIndex] !== "quiz" && post.quiz)
+      throw new Error(`Generated posts validation failed: unexpected quiz for jobIndex ${post.jobIndex}.`);
+  }
+  return parsed;
+}
+
+export const ImportSchema = createImportSchema(QuizSchema);

@@ -1,4 +1,5 @@
 import type { ProviderId } from "./config";
+import { fetchJson } from "./transport";
 
 type CredentialProviderId = Exclude<ProviderId, "ollama">;
 
@@ -33,7 +34,7 @@ export function credentialProbeUrl(
       url.pathname = `${path}/usage`;
     }
   } else {
-    url.pathname = `${path}/models`;
+    url.pathname = `${path}/${providerId === "openrouter" ? "key" : "models"}`;
   }
   url.search = "";
   url.hash = "";
@@ -48,44 +49,25 @@ export async function probeProviderCredentials(options: {
   fetchImpl?: typeof fetch;
 }): Promise<void> {
   const { providerId, baseUrl, apiKey } = options;
-  const authenticationHeaders: Record<string, string> =
-    providerId === "anthropic"
-      ? {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        }
-      : { Authorization: `Bearer ${apiKey}` };
-  const response = await (options.fetchImpl ?? fetch)(
+  try {
+    await fetchJson(
     credentialProbeUrl(providerId, baseUrl),
     {
       method: "GET",
-      headers: { ...authenticationHeaders, ...(options.headers ?? {}) },
+      headers: { ...(options.headers ?? {}), ...authenticationHeaders(providerId, apiKey) },
     },
+    options.fetchImpl,
   );
-  const body = await response.text();
-  if (!response.ok) {
-    const providerName =
-      providerId === "openai"
-        ? "OpenAI"
-        : providerId === "anthropic"
-          ? "Anthropic"
-          : "NanoGPT";
-    throw new ProviderCredentialError(
-      `${providerName} credential check failed (${response.status})${
-        body ? `: ${body.slice(0, 400)}` : ""
-      }`,
-      response.status,
-    );
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && typeof error.status === "number")
+      throw new ProviderCredentialError(`Credential check failed (${error.status}).`, error.status);
+    throw error;
   }
+}
 
-  // Reject captive-portal/proxy HTML even when it responds with HTTP 200.
-  try {
-    const parsed: unknown = JSON.parse(body);
-    if (!parsed || typeof parsed !== "object") throw new Error();
-  } catch {
-    throw new ProviderCredentialError(
-      "認証確認先からJSONではない応答が返されました。Base URLを確認してください。",
-      502,
-    );
-  }
+export function authenticationHeaders(providerId: ProviderId, apiKey: string): Record<string, string> {
+  if (providerId === "anthropic") return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+  if (providerId === "gemini") return { "x-goog-api-key": apiKey };
+  if (providerId === "ollama") return {};
+  return { Authorization: `Bearer ${apiKey}` };
 }

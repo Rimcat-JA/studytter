@@ -1,6 +1,6 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { CONFIG } from "../core/config";
-import { createId, getDb } from "../db/database";
+import { assertDatabaseGeneration, captureDatabaseGeneration, createId, getDb, getDbForGeneration, withDbTransaction } from "../db/database";
 import { getPurposeRoute } from "../llm/config";
 import {
   extractMaterialChunk,
@@ -57,8 +57,9 @@ export async function copyMaterials(
 export async function extractSubject(
   subjectId: string,
   onProgress?: (progress: ExtractionProgress) => void,
+  generation = captureDatabaseGeneration(),
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getDbForGeneration(generation);
   const { providerId, model } = await getPurposeRoute("extraction");
   if (providerId === "ollama")
     throw new Error("Extraction requires OpenAI or Anthropic.");
@@ -134,7 +135,7 @@ export async function extractSubject(
   const recordFailure = async (material: MaterialRow, error: unknown) => {
     failedMaterials.add(material.material_id);
     await db.runAsync(
-      "UPDATE materials SET status='failed',error_message=? WHERE material_id=?",
+      "UPDATE materials SET status='failed',error_message=? WHERE material_id=? AND status!='replaced'",
       error instanceof Error ? error.message : String(error),
       material.material_id,
     );
@@ -158,8 +159,15 @@ export async function extractSubject(
         pageStart: input.pageStart,
         pageEnd: input.pageEnd,
         firstChunk: successful.length === 0,
+        databaseGeneration: generation,
       });
-      successful.push(chunk);
+      await withDbTransaction(async (db) => {
+      const activeMaterial = await db.getFirstAsync<{ material_id: string }>(
+        "SELECT m.material_id FROM materials m JOIN subjects s ON s.subject_id=m.subject_id WHERE m.material_id=? AND m.subject_id=? AND m.status='extracting'",
+        material.material_id,
+        subjectId,
+      );
+      if (!activeMaterial) throw new Error("教材または科目が変更されたため、抽出結果を保存できませんでした。");
       for (const atom of chunk.atoms) {
         const existing = await db.getAllAsync<{ core: string }>(
           "SELECT core FROM atoms WHERE subject_id=? AND lower(trim(topic_label))=lower(trim(?))",
@@ -188,6 +196,8 @@ export async function extractSubject(
           atomId,
         );
       }
+      }, generation);
+      successful.push(chunk);
       advanceProgress();
     } catch (error) {
       // A request-level failure (503, rate limit, auth/config, timeout, or an
@@ -297,13 +307,14 @@ export async function removeMaterial(
   materialId: string,
   replacement?: PickedMaterial,
 ): Promise<string | null> {
+  const generation = captureDatabaseGeneration();
   const db = await getDb();
   const material = await db.getFirstAsync<{ subject_id: string }>(
     "SELECT subject_id FROM materials WHERE material_id=?",
     materialId,
   );
   if (!material) return null;
-  await db.withTransactionAsync(async () => {
+  await withDbTransaction(async (db) => {
     await db.runAsync(
       "UPDATE atoms SET enabled=0 WHERE material_id=?",
       materialId,
@@ -316,8 +327,9 @@ export async function removeMaterial(
       "UPDATE materials SET status='replaced' WHERE material_id=?",
       materialId,
     );
-  });
+  }, generation);
   if (replacement) {
+    assertDatabaseGeneration(generation);
     await copyMaterials(material.subject_id, [replacement]);
   }
   return material.subject_id;

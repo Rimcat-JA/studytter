@@ -12,6 +12,7 @@ import {
 import { useTranslation } from "react-i18next";
 import i18n from "../../src/i18n";
 import { setSetting } from "../../src/db/database";
+import { DEFAULT_MODELS, LLM_PURPOSES, providerName, setPurposeRoute, type ProviderId } from "../../src/llm/config";
 import {
   formatProviderError,
   setApiKey,
@@ -24,18 +25,15 @@ export default function Onboarding() {
   const { t } = useTranslation();
   const router = useRouter();
   const [step, setStep] = useState(0);
-  const [provider, setProvider] = useState<"openai" | "anthropic" | "nanogpt">("openai");
+  const [provider, setProvider] = useState<Exclude<ProviderId, "ollama" | "custom">>("openai");
   const [key, setKey] = useState("");
   const [testing, setTesting] = useState(false);
   const [lang, setLang] = useState<"ja" | "en" | "zh-Hans">("ja");
   const saveProvider = async () => {
     if (key.trim()) {
       await setApiKey(provider, key);
-      await setSetting("generationProvider", provider);
-      await setSetting("extractionProvider", provider);
-      await setSetting("deepdiveProvider", provider);
-      const selectedModels = provider === "openai" ? {extraction:"gpt-5.4",generation:"gpt-5.4-mini",deepdive:"gpt-5.4"} : provider === "anthropic" ? {extraction:"claude-sonnet-4-6",generation:"claude-haiku-4-5",deepdive:"claude-sonnet-4-6"} : {extraction:"deepseek-chat",generation:"deepseek-chat",deepdive:"deepseek-chat"};
-      await setSetting("extractionModel",selectedModels.extraction);await setSetting("generationModel",selectedModels.generation);await setSetting("deepdiveModel",selectedModels.deepdive);
+      for (const purpose of LLM_PURPOSES)
+        await setPurposeRoute(purpose, { providerId: provider, model: DEFAULT_MODELS[provider][purpose] });
       setStep(2);
     } else
       Alert.alert("APIキー", "APIキーを入力するか、デモを選んでください。");
@@ -77,20 +75,21 @@ export default function Onboarding() {
           <View style={styles.panel}>
             <Text style={commonStyles.title}>{t("provider")}</Text>
             <Text style={commonStyles.subtitle}>
-              抽出には画像・PDF対応のOpenAI、Anthropic、またはNanoGPTが必要です。
+              APIキーの発行元を選んでください。画像・PDF対応モデルを抽出に使用します。OpenAI互換APIとOllamaは設定画面から追加できます。
             </Text>
             <View style={styles.toggle}>
-              {(["openai", "anthropic", "nanogpt"] as const).map((id) => (
+              {(["openai", "anthropic", "nanogpt", "openrouter", "gemini"] as const).map((id) => (
                 <Pressable
                   key={id}
-                  onPress={() => setProvider(id)}
+                  disabled={testing}
+                  onPress={() => { setProvider(id); setKey(""); }}
                   style={[
                     styles.toggleItem,
                     provider === id && styles.toggleActive,
                   ]}
                 >
                   <Text style={commonStyles.text}>
-                    {id === "openai" ? "OpenAI" : id === "anthropic" ? "Anthropic" : "NanoGPT"}
+                    {providerName(id)}
                   </Text>
                 </Pressable>
               ))}
@@ -130,7 +129,7 @@ export default function Onboarding() {
                 }
               }}
             />
-            <Button title={t("next")} onPress={saveProvider} />
+            <Button title={t("next")} disabled={testing} onPress={() => void saveProvider().catch((error) => Alert.alert(t("settingsSaveFailed"), formatProviderError(error)))} />
             <Button
               variant="ghost"
               title={t("demo")}
@@ -199,11 +198,12 @@ const styles = StyleSheet.create({
   brand: { color: colors.blue, fontSize: 18, fontWeight: "800" },
   toggle: {
     flexDirection: "row",
+    flexWrap: "wrap",
     padding: 4,
     backgroundColor: colors.surface,
     borderRadius: 14,
   },
-  toggleItem: { flex: 1, padding: 12, alignItems: "center", borderRadius: 10 },
+  toggleItem: { minWidth: 96, flexGrow: 1, padding: 12, alignItems: "center", borderRadius: 10 },
   toggleActive: { backgroundColor: colors.surfaceAlt },
   privacyIcon: { fontSize: 64, color: colors.blue },
   privacy: {

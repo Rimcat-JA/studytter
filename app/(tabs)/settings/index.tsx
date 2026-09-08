@@ -20,6 +20,7 @@ export default function Settings() {
     ["notifications", "♢", t("notifications"), t("localNotifications")],
     ["usage", "▥", t("usage"), ""],
     ["data", "⇅", t("data"), t("exportImport")],
+    ["companion", "⇣", "PCから取り込む", "学習パッケージを科目として追加"],
     ["debug", "⌘", t("diagnostics"), t("interactionLog")],
   ] as const;
   return (
@@ -67,7 +68,7 @@ export default function Settings() {
           </View>
         </View>
         <View style={styles.about}>
-          <Text style={styles.brand}>LearnStream 1.0.0</Text>
+          <Text style={styles.brand}>LearnStream 1.1.0</Text>
           <Text style={styles.subtitle}>Your key. Your device.</Text>
           <Text style={styles.subtitle}>
             MIT License · No accounts · No telemetry

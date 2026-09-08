@@ -1,9 +1,9 @@
-import { createId, getDb, getSetting } from "../db/database";
+import { assertDatabaseGeneration, captureDatabaseGeneration, createId, getDbForGeneration, getSetting, withDbTransaction } from "../db/database";
 import type { GenerationJob } from "../core/types";
 import { getPurposeRoute } from "./config";
 import { jaccard } from "./extract";
 import { createProvider, type ProviderId } from "./provider";
-import { GeneratedPostsSchema, type GeneratedPosts } from "./schemas";
+import { GeneratedPostsSchema, validateGeneratedPosts, type GeneratedPosts } from "./schemas";
 import { logUsage } from "./usage";
 import { shouldFlagRareCard } from "../core/scheduler";
 import { classifyGenerationError } from "../core/autogeneration";
@@ -14,10 +14,16 @@ export async function generateBatch(
   jobs: readonly GenerationJob[],
   providerId: ProviderId,
   model: string,
+  generation = captureDatabaseGeneration(),
 ): Promise<number> {
   if (!jobs.length) return 0;
-  const db = await getDb();
-  const details = [];
+  const db = await getDbForGeneration(generation);
+  const details: {
+    job: GenerationJob;
+    atom: { core: string; note: string | null; source_anchor: string; difficulty: number };
+    persona: { display_name: string; handle: string; content_lang: string };
+    language: string;
+  }[] = [];
   for (const job of jobs) {
     const atom = await db.getFirstAsync<{
       core: string;
@@ -25,15 +31,16 @@ export async function generateBatch(
       source_anchor: string;
       difficulty: number;
     }>(
-      "SELECT core,note,source_anchor,difficulty FROM atoms WHERE atom_id=? AND enabled=1",
+      "SELECT core,note,source_anchor,difficulty FROM atoms WHERE atom_id=? AND subject_id=? AND enabled=1",
       job.atomId,
+      job.subjectId,
     );
     const subject = await db.getFirstAsync<{
       display_name: string;
       handle: string;
       content_lang: string;
     }>(
-      "SELECT display_name,handle,content_lang FROM subjects WHERE subject_id=?",
+      "SELECT display_name,handle,content_lang FROM subjects WHERE subject_id=? AND enabled=1",
       job.subjectId,
     );
     if (atom && subject)
@@ -50,6 +57,7 @@ export async function generateBatch(
   let lastFailure: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
+      assertDatabaseGeneration(generation);
       const result = await provider.generateJson<GeneratedPosts>({
         model,
         system: SYSTEM,
@@ -62,24 +70,21 @@ export async function generateBatch(
         schema: GeneratedPostsSchema,
         maxTokens: 5_000,
       });
-      await logUsage(providerId, model, "generation", result.usage);
-      const indexes: number[] = result.data.posts.map(
-        (item: GeneratedPosts["posts"][number]) => item.jobIndex,
-      );
-      const uniqueIndexes = new Set<number>(indexes);
-      const complete =
-        indexes.length === details.length &&
-        uniqueIndexes.size === details.length &&
-        details.every((_, index) => uniqueIndexes.has(index));
-      if (!complete)
-        throw new Error(
-          `Generated posts validation failed: expected each jobIndex from 0 to ${details.length - 1} exactly once.`,
-        );
+      assertDatabaseGeneration(generation);
+      await logUsage(providerId, model, "generation", result.usage, generation);
+      const validated = validateGeneratedPosts(result.data, details.map((detail) => detail.job.format));
+      return await withDbTransaction(async (db) => {
       let inserted = 0;
       const insertedIds: string[] = [];
-      for (const item of result.data.posts) {
+      for (const item of validated.posts) {
         const detail = details[item.jobIndex];
         if (!detail) continue;
+        const active = await db.getFirstAsync<{ atom_id: string }>(
+          "SELECT a.atom_id FROM atoms a JOIN subjects s ON s.subject_id=a.subject_id WHERE a.atom_id=? AND a.subject_id=? AND a.enabled=1 AND s.enabled=1",
+          detail.job.atomId,
+          detail.job.subjectId,
+        );
+        if (!active) continue;
         const prior = await db.getAllAsync<{ text: string }>(
           "SELECT text FROM posts WHERE atom_id=?",
           detail.job.atomId,
@@ -118,7 +123,8 @@ export async function generateBatch(
           insertedIds[Math.floor(Math.random() * insertedIds.length)],
         );
       if (inserted >= 8) {
-        const subject = details[0].job.subjectId;
+        const owner = await db.getFirstAsync<{ subject_id: string }>("SELECT subject_id FROM posts WHERE id=?", insertedIds[0]);
+        const subject = owner!.subject_id;
         const breaks = [
           "ひと呼吸。いま覚えたことを自分の言葉で言える？",
           "30秒だけ遠くを見て、次の学びへ。",
@@ -139,7 +145,26 @@ export async function generateBatch(
           Date.now(),
         );
       }
+      if (inserted > 0) {
+        // Commit the daily budget count with the posts. A process interruption
+        // before the orchestrator's final status write must not erase the count.
+        const row = await db.getFirstAsync<{ value_json: string }>("SELECT value_json FROM settings WHERE key='autoGenerationState'");
+        let state: Record<string, unknown> = {};
+        try {
+          const decoded: unknown = row ? JSON.parse(row.value_json) : null;
+          if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) state = decoded as Record<string, unknown>;
+        } catch { /* Keep committed posts recoverable even with old corrupt runtime metadata. */ }
+        const now = new Date();
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        const previous = state.generatedDay === today && typeof state.generatedToday === "number" && Number.isFinite(state.generatedToday)
+          ? Math.max(0, state.generatedToday) : 0;
+        await db.runAsync(
+          "INSERT INTO settings(key,value_json) VALUES('autoGenerationState',?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+          JSON.stringify({ ...state, generatedDay: today, generatedToday: previous + inserted }),
+        );
+      }
       return inserted;
+      }, generation);
     } catch (error) {
       lastFailure = error;
       lastError = error instanceof Error ? error.message : String(error);
@@ -152,9 +177,9 @@ export async function generateBatch(
   throw new Error(lastError || "Post generation failed.");
 }
 
-export async function refillBatch(count: number): Promise<number> {
-  const db = await getDb();
-  if (await getSetting("monthlyCapEnabled", false)) {
+export async function refillBatch(count: number, subjectId?: string, generation = captureDatabaseGeneration()): Promise<number> {
+  const db = await getDbForGeneration(generation);
+  if (await getSetting("monthlyCapEnabled", false, generation)) {
     const start = new Date();
     start.setDate(1);
     start.setHours(0, 0, 0, 0);
@@ -162,14 +187,14 @@ export async function refillBatch(count: number): Promise<number> {
       "SELECT COALESCE(SUM(est_cost_usd),0) total FROM usage_log WHERE created_at>=?",
       start.getTime(),
     );
-    if ((spent?.total ?? 0) >= (await getSetting("monthlyCapUsd", 10)))
+    if ((spent?.total ?? 0) >= (await getSetting("monthlyCapUsd", 10, generation)))
       return 0;
   }
   // Imported lazily to keep the core dependency one-way.
   const { buildRefillJobs } = await import("../services/refill");
-  const jobs = await buildRefillJobs(Math.max(1, Math.min(20, count)));
+  const jobs = await buildRefillJobs(Math.max(1, Math.min(20, count)), subjectId, generation);
   const { providerId, model } = await getPurposeRoute("generation");
-  return generateBatch(jobs, providerId, model);
+  return generateBatch(jobs, providerId, model, generation);
 }
 
 // Kept as a compatibility entry point for subject creation and older callers.

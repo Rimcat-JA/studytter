@@ -1,8 +1,9 @@
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Share, StyleSheet, Text, View } from "react-native";
 import Animated, {
+  cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
@@ -12,17 +13,11 @@ import Animated, {
 } from "react-native-reanimated";
 import { useTranslation } from "react-i18next";
 import type { PostRow } from "../db/database";
-import { isLiked } from "../db/database";
-import { recordAction } from "../services/interactions";
+import { QuizSchema } from "../llm/schemas";
+import { getPostInteractionState, recordAction, submitQuizAnswer } from "../services/interactions";
+import type { QuizAttempt } from "../services/interactions";
 import { colors } from "./theme";
 
-type Quiz = {
-  question: string;
-  choices?: string[];
-  answerIndex?: number;
-  answerText: string;
-  explanation: string;
-};
 export function Avatar({
   seed,
   name,
@@ -52,28 +47,71 @@ export function Avatar({
     </View>
   );
 }
-export default function PostCard({
-  post,
-  showReplyAction = true,
-}: {
+type PostCardProps = {
   post: PostRow;
   showReplyAction?: boolean;
-}) {
+  onBookmarkChange?: (postId: string, saved: boolean) => void;
+};
+
+export default function PostCard(props: PostCardProps) {
+  // FlashList reuses the outer cell. Keying its stateful contents prevents even
+  // one frame of a different post's answer, pending action or bookmark state.
+  return <PostCardContent key={props.post.id} {...props} />;
+}
+
+function PostCardContent({
+  post,
+  showReplyAction = true,
+  onBookmarkChange,
+}: PostCardProps) {
   const { t, i18n } = useTranslation();
   const router = useRouter();
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [answer, setAnswer] = useState<number | null>(null);
+  const [attempt, setAttempt] = useState<QuizAttempt | null>(null);
+  const [databaseGeneration, setDatabaseGeneration] = useState<number | null>(null);
   const [revealed, setRevealed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<"load" | "action" | null>(null);
+  const mounted = useRef(false);
+  const busy = useRef(false);
   const scale = useSharedValue(1);
   const glow = useSharedValue(0.25);
-  const quiz: Quiz | null = post.quiz_json ? JSON.parse(post.quiz_json) : null;
-  useEffect(() => {
-    isLiked(post.id).then(setLiked);
+  const quiz = useMemo(() => {
+    try {
+      const parsed = QuizSchema.safeParse(JSON.parse(post.quiz_json ?? "null"));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }, [post.quiz_json]);
+  const answer = attempt?.answerIndex ?? null;
+  const completed = attempt?.completed === true;
+  const disabled = loading || pending || attempt === null || databaseGeneration === null;
+  const loadState = useCallback(() => {
+    return getPostInteractionState(post.id).then((state) => {
+      if (!mounted.current) return;
+      setError(null);
+      setDatabaseGeneration(state.databaseGeneration);
+      setLiked(state.liked);
+      setSaved(state.saved);
+      setAttempt(state.attempt);
+      setRevealed(state.attempt.completed);
+    }).catch(() => {
+      if (mounted.current) setError("load");
+    }).finally(() => {
+      if (mounted.current) setLoading(false);
+    });
   }, [post.id]);
   useEffect(() => {
+    mounted.current = true;
+    void loadState();
+    return () => { mounted.current = false; };
+  }, [loadState]);
+  useEffect(() => {
     if (post.is_rare_card === 1) {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
       glow.value = withRepeat(
         withSequence(
           withTiming(1, { duration: 900 }),
@@ -82,31 +120,47 @@ export default function PostCard({
         -1,
       );
     }
+    return () => { cancelAnimation(glow); };
   }, [glow, post.is_rare_card]);
   const heartStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
   }));
   const glowStyle = useAnimatedStyle(() => ({ opacity: glow.value }));
-  const toggleLike = async () => {
+  const perform = async (operation: () => Promise<void>) => {
+    if (busy.current || disabled) return;
+    busy.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      await operation();
+    } catch {
+      if (mounted.current) setError("action");
+    } finally {
+      busy.current = false;
+      if (mounted.current) setPending(false);
+    }
+  };
+  const toggleLike = () => perform(async () => {
     const next = !liked;
+    await recordAction(post.id, next ? "like" : "unlike", undefined, databaseGeneration!);
+    if (!mounted.current) return;
     setLiked(next);
     // Reanimated SharedValue is intentionally mutable on the UI thread.
-    // eslint-disable-next-line react-hooks/immutability
     scale.value = withSequence(withSpring(1.45), withSpring(1));
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await recordAction(post.id, next ? "like" : "unlike");
-  };
-  const choose = async (index: number) => {
-    if (answer !== null) return;
-    setAnswer(index);
-    const correct = index === quiz?.answerIndex;
-    await Haptics.notificationAsync(
-      correct
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  });
+  const submit = (selection: { answerIndex: number } | { correct: boolean }) => perform(async () => {
+    if (!attempt || completed) return;
+    const result = await submitQuizAnswer(post.id, attempt.sessionKey, selection, databaseGeneration!);
+    if (!mounted.current) return;
+    setAttempt(result);
+    setRevealed(true);
+    void Haptics.notificationAsync(
+      result.correct
         ? Haptics.NotificationFeedbackType.Success
         : Haptics.NotificationFeedbackType.Warning,
-    );
-    await recordAction(post.id, correct ? "quiz_correct" : "quiz_wrong");
-  };
+    ).catch(() => {});
+  });
   return (
     <View style={[styles.card, post.is_rare_card === 1 && styles.rare]}>
       {post.is_rare_card === 1 && (
@@ -134,13 +188,14 @@ export default function PostCard({
             <View style={styles.quiz}>
               <Text style={styles.question}>{quiz.question}</Text>
               {quiz.choices?.map((choice, index) => {
-                const correct = answer !== null && index === quiz.answerIndex;
+                const correct = completed && index === quiz.answerIndex;
                 const wrong = answer === index && !correct;
                 return (
                   <Pressable
                     key={index}
-                    disabled={answer !== null}
-                    onPress={() => choose(index)}
+                    accessibilityRole="button"
+                    disabled={disabled || completed}
+                    onPress={() => submit({ answerIndex: index })}
                     style={[
                       styles.choice,
                       correct && styles.correct,
@@ -156,10 +211,11 @@ export default function PostCard({
                   {!revealed ? (
                     <Pressable
                       style={styles.reveal}
-                      onPress={async () => {
-                        setRevealed(true);
-                        await recordAction(post.id, "reveal");
-                      }}
+                      disabled={disabled}
+                      onPress={() => perform(async () => {
+                        await recordAction(post.id, "reveal", undefined, databaseGeneration!);
+                        if (mounted.current) setRevealed(true);
+                      })}
                     >
                       <Text style={styles.revealText}>{t("reveal")}</Text>
                     </Pressable>
@@ -168,12 +224,16 @@ export default function PostCard({
                       <Text style={styles.choiceText}>{quiz.answerText}</Text>
                       <View style={styles.grade}>
                         <Pressable
-                          onPress={() => recordAction(post.id, "quiz_correct")}
+                          disabled={disabled || completed}
+                          accessibilityState={{ disabled: disabled || completed, selected: completed && attempt?.correct === true }}
+                          onPress={() => submit({ correct: true })}
                         >
                           <Text style={styles.good}>{t("knew")}</Text>
                         </Pressable>
                         <Pressable
-                          onPress={() => recordAction(post.id, "quiz_wrong")}
+                          disabled={disabled || completed}
+                          accessibilityState={{ disabled: disabled || completed, selected: completed && attempt?.correct === false }}
+                          onPress={() => submit({ correct: false })}
                         >
                           <Text style={styles.bad}>{t("didntKnow")}</Text>
                         </Pressable>
@@ -182,14 +242,40 @@ export default function PostCard({
                   )}
                 </>
               )}
-              {(answer !== null || revealed) && (
+              {completed && (
+                <Text style={styles.source}>
+                  {t("answerRecorded", { defaultValue: "回答を記録しました" })}
+                  {" · "}
+                  {attempt?.correct ? t("knew") : t("didntKnow")}
+                </Text>
+              )}
+              {(completed || revealed) && (
                 <Text style={styles.explanation}>{quiz.explanation}</Text>
               )}
             </View>
           )}
-          <Text style={styles.source}>
-            {t("source")}: {post.source_anchor}
-          </Text>
+          {post.quiz_json && !quiz && (
+            <Text style={styles.error}>{t("invalidQuiz", { defaultValue: "問題データを読み込めません。このカードは回答できません。" })}</Text>
+          )}
+          {loading && <Text style={styles.source}>{t("loading", { defaultValue: "読み込み中…" })}</Text>}
+          {pending && <Text style={styles.source}>{t("savingAnswer", { defaultValue: "保存中…" })}</Text>}
+          {error && (
+            <View style={styles.feedback}>
+              <Text style={styles.error}>
+                {error === "load"
+                  ? t("cardLoadFailed", { defaultValue: "学習状態を読み込めませんでした。" })
+                  : t("cardSaveFailed", { defaultValue: "保存できませんでした。もう一度操作してください。" })}
+              </Text>
+              <Pressable disabled={pending || loading} onPress={() => { setLoading(true); setError(null); void loadState(); }}>
+                <Text style={styles.retry}>{t("retry", { defaultValue: "再読み込み" })}</Text>
+              </Pressable>
+            </View>
+          )}
+          <Pressable accessibilityRole="button" onPress={() => router.push(`/source/${post.id}` as never)}>
+            <Text style={styles.source}>
+              {t("source")}: {post.source_anchor} ›
+            </Text>
+          </Pressable>
           <View style={styles.actions}>
             {showReplyAction && (
               <Action
@@ -199,20 +285,25 @@ export default function PostCard({
                   defaultValue: "AIに質問",
                 })}
                 active={false}
-                onPress={async () => {
-                  await recordAction(post.id, "expand");
-                  router.push(`/post/${post.id}`);
-                }}
+                disabled={disabled}
+                onPress={() => perform(async () => {
+                  await recordAction(post.id, "expand", undefined, databaseGeneration!);
+                  if (mounted.current) router.push(`/post/${post.id}`);
+                })}
               />
             )}
             <Action
               glyph={saved ? "▣" : "▢"}
               accessibilityLabel={t("save", { defaultValue: "保存" })}
               active={saved}
-              onPress={async () => {
-                setSaved(!saved);
-                await recordAction(post.id, "save");
-              }}
+              disabled={disabled}
+              onPress={() => perform(async () => {
+                const next = !saved;
+                await recordAction(post.id, next ? "save" : "unsave", undefined, databaseGeneration!);
+                if (!mounted.current) return;
+                setSaved(next);
+                onBookmarkChange?.(post.id, next);
+              })}
             />
             <Animated.View style={heartStyle}>
               <Action
@@ -220,6 +311,7 @@ export default function PostCard({
                 accessibilityLabel={t("like", { defaultValue: "いいね" })}
                 active={liked}
                 color={colors.red}
+                disabled={disabled}
                 onPress={toggleLike}
               />
             </Animated.View>
@@ -227,11 +319,12 @@ export default function PostCard({
               glyph="↗"
               accessibilityLabel={t("share", { defaultValue: "共有" })}
               active={false}
-              onPress={() =>
-                Share.share({
+              disabled={disabled}
+              onPress={() => perform(async () => {
+                await Share.share({
                   message: `${post.text}\n${t("source")}: ${post.source_anchor}\nlearnstream://post/${post.id}`,
-                })
-              }
+                });
+              })}
             />
           </View>
         </View>
@@ -245,6 +338,7 @@ function Action({
   accessibilityLabel,
   active,
   color = colors.blue,
+  disabled = false,
   onPress,
 }: {
   glyph: string;
@@ -252,15 +346,18 @@ function Action({
   accessibilityLabel: string;
   active: boolean;
   color?: string;
+  disabled?: boolean;
   onPress: () => void;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled, selected: active }}
+      disabled={disabled}
       hitSlop={12}
       onPress={onPress}
-      style={styles.actionButton}
+      style={[styles.actionButton, disabled && styles.disabled]}
     >
       <Text style={{ fontSize: 22, color: active ? color : colors.muted }}>
         {glyph}
@@ -330,6 +427,10 @@ const styles = StyleSheet.create({
     paddingTop: 14,
   },
   actionButton: { minWidth: 34, alignItems: "center" },
+  disabled: { opacity: 0.5 },
+  feedback: { gap: 6, marginTop: 8 },
+  error: { color: colors.warning, marginTop: 8 },
+  retry: { color: colors.blue, fontWeight: "700" },
   actionLabel: {
     color: colors.blue,
     fontSize: 10,

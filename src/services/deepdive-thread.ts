@@ -15,7 +15,7 @@ export const DeepDiveMessageSchema = z.object({
   status: DeepDiveMessageStatusSchema,
   createdAt: z.number().finite(),
   updatedAt: z.number().finite(),
-  providerId: z.enum(["anthropic", "openai", "nanogpt", "ollama"]).optional(),
+  providerId: z.enum(["anthropic", "openai", "nanogpt", "openrouter", "gemini", "custom", "ollama"]).optional(),
   modelId: z.string().min(1).optional(),
   errorMessage: z.string().optional(),
 });

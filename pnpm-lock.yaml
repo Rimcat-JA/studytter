@@ -15,6 +15,9 @@ importers:
       '@ai-sdk/anthropic':
         specifier: ^4.0.15
         version: 4.0.15(zod@4.4.3)
+      '@ai-sdk/google':
+        specifier: ^4.0.64
+        version: 4.0.64(zod@4.4.3)
       '@ai-sdk/openai':
         specifier: ^4.0.15
         version: 4.0.15(zod@4.4.3)
@@ -124,6 +127,9 @@ importers:
       '@types/react':
         specifier: ^19.2.17
         version: 19.2.17
+      '@types/react-test-renderer':
+        specifier: ^19.1.0
+        version: 19.1.0
       '@vitest/coverage-v8':
         specifier: ^4.1.10
         version: 4.1.10(vitest@4.1.10)
@@ -133,6 +139,9 @@ importers:
       eslint-config-expo:
         specifier: ^57.0.0
         version: 57.0.0(eslint@9.39.5)(typescript@6.0.3)
+      react-test-renderer:
+        specifier: 19.2.3
+        version: 19.2.3(react@19.2.3)
       tsx:
         specifier: ^4.23.1
         version: 4.23.1
@@ -160,6 +169,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/google@4.0.64':
+    resolution: {integrity: sha512-D8+74xfXkzPi5qCe7iRzQRH/1WW805gBrXfwz7KKEBa0SMY2TENdsTrJnVqFZaT7UYow1Ls6qroaklLd9veU9w==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/openai@4.0.15':
     resolution: {integrity: sha512-JpTLQp5RUbRcs5nOyPEu5NRdxZLUnD/uCyT3qzy26D+iunCeL7KJV58ER9kwisAKnTjWravfNblaQNiWr20M9A==}
     engines: {node: '>=22'}
@@ -171,6 +186,16 @@ packages:
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@5.0.36':
+    resolution: {integrity: sha512-MFXBn6XDyf37PNQAge/HTatPJE8Vmg/g/w4WPtjSV53jq8FKAzoaN5+43hsdQa9bqgN+/13jxug9ChvsG+godQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider@4.0.10':
+    resolution: {integrity: sha512-fX2ENAc7iDpZ+Wp4+Rk06Usn/Ys7dI9uAkGv0jlF6XVrW13NkRWx5Ou+U6lIM2E1fTLkCs16GGrUAaVvroag7A==}
+    engines: {node: '>=22'}
 
   '@ai-sdk/provider@4.0.3':
     resolution: {integrity: sha512-e0CpNWJUY7OxAFAnCZkw+ri9QOHWwTs1tXP42782KFGCU07qt8NiXCrCVowyCB5dP2r5/Uls+g2oPd8kOJn9dw==}
@@ -1742,10 +1767,12 @@ packages:
   '@xmldom/xmldom@0.8.13':
     resolution: {integrity: sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
@@ -2480,6 +2507,7 @@ packages:
   eslint@9.39.5:
     resolution: {integrity: sha512-DgZS62aPLXKlnxILS/AYCoRvHaZeXceIzlXPkkGGzJWSow1aEk0lbTlxUSlyjC8jcaKxAdOnTDz+o1JFSBsyjw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -3904,6 +3932,11 @@ packages:
       '@types/react':
         optional: true
 
+  react-test-renderer@19.2.3:
+    resolution: {integrity: sha512-TMR1LnSFiWZMJkCgNf5ATSvAheTT2NvKIwiVwdBPHxjBI7n/JbWd4gaZ16DVd9foAXdvDz+sB5yxZTwMjPRxpw==}
+    peerDependencies:
+      react: ^19.2.3
+
   react@19.2.3:
     resolution: {integrity: sha512-Ku/hhYbVjOQnXDZFv2+RibmLFGwFdeeKHFcOTlrt7xplBnya5OGn/hIRDsqDiSUcfORsDC7MPxwork8jBwsIWA==}
     engines: {node: '>=0.10.0'}
@@ -4331,6 +4364,10 @@ packages:
   undici-types@8.3.0:
     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
 
+  undici@7.29.1:
+    resolution: {integrity: sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q==}
+    engines: {node: '>=20.18.1'}
+
   unicode-canonical-property-names-ecmascript@2.0.1:
     resolution: {integrity: sha512-dA8WbNeb2a6oQzAQ55YlT5vQAWGV9WXOsi3SskE3bcCdM0P4SDd+24zS/OCacdRq5BkdsRj9q3Pg6YyQoxIGqg==}
     engines: {node: '>=4'}
@@ -4676,6 +4713,12 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.4.3
 
+  '@ai-sdk/google@4.0.64(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.10
+      '@ai-sdk/provider-utils': 5.0.36(zod@4.4.3)
+      zod: 4.4.3
+
   '@ai-sdk/openai@4.0.15(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 4.0.3
@@ -4689,6 +4732,19 @@ snapshots:
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
       zod: 4.4.3
+
+  '@ai-sdk/provider-utils@5.0.36(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.10
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      undici: 7.29.1
+      zod: 4.4.3
+
+  '@ai-sdk/provider@4.0.10':
+    dependencies:
+      json-schema: 0.4.0
 
   '@ai-sdk/provider@4.0.3':
     dependencies:
@@ -8944,6 +9000,12 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
+  react-test-renderer@19.2.3(react@19.2.3):
+    dependencies:
+      react: 19.2.3
+      react-is: 19.2.7
+      scheduler: 0.27.0
+
   react@19.2.3: {}
 
   redent@3.0.0:
@@ -9431,6 +9493,8 @@ snapshots:
       which-boxed-primitive: 1.1.1
 
   undici-types@8.3.0: {}
+
+  undici@7.29.1: {}
 
   unicode-canonical-property-names-ecmascript@2.0.1: {}
 

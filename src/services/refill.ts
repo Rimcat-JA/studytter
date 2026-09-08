@@ -5,10 +5,10 @@ import type {
   GenerationJob,
   SchedulerSubject,
 } from "../core/types";
-import { getDb } from "../db/database";
+import { captureDatabaseGeneration, getDbForGeneration } from "../db/database";
 
-export async function buildRefillJobs(count: number): Promise<GenerationJob[]> {
-  const db = await getDb();
+export async function buildRefillJobs(count: number, subjectId?: string, generation = captureDatabaseGeneration()): Promise<GenerationJob[]> {
+  const db = await getDbForGeneration(generation);
   const atoms = await db.getAllAsync<{
     atom_id: string;
     subject_id: string;
@@ -20,12 +20,13 @@ export async function buildRefillJobs(count: number): Promise<GenerationJob[]> {
     last_reviewed_at: number | null;
     seen_count: number;
   }>(
-    `SELECT a.atom_id,a.subject_id,a.topic_label,a.core,a.note,a.source_anchor,COALESCE(m.stability_days,1) stability_days,m.last_reviewed_at,(SELECT COUNT(*) FROM posts p WHERE p.atom_id=a.atom_id AND p.status!='discarded') seen_count FROM atoms a LEFT JOIN atom_memory m ON m.atom_id=a.atom_id JOIN subjects s ON s.subject_id=a.subject_id WHERE a.enabled=1 AND s.enabled=1`,
+    `SELECT a.atom_id,a.subject_id,a.topic_label,a.core,a.note,a.source_anchor,COALESCE(m.stability_days,1) stability_days,m.last_reviewed_at,(SELECT COUNT(*) FROM posts p WHERE p.atom_id=a.atom_id AND p.status!='discarded') seen_count FROM atoms a LEFT JOIN atom_memory m ON m.atom_id=a.atom_id JOIN subjects s ON s.subject_id=a.subject_id WHERE a.enabled=1 AND s.enabled=1 ${subjectId ? "AND a.subject_id=?" : ""}`,
+    subjectId ? [subjectId] : [],
   );
   const subjects = await db.getAllAsync<{
     subject_id: string;
     format_weights_json: string;
-  }>("SELECT subject_id,format_weights_json FROM subjects WHERE enabled=1");
+  }>(`SELECT subject_id,format_weights_json FROM subjects WHERE enabled=1 ${subjectId ? "AND subject_id=?" : ""}`, subjectId ? [subjectId] : []);
   const arms = await db.getAllAsync<{
     topic_key: string;
     format: string;

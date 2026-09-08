@@ -1,15 +1,14 @@
 import demo from "../../assets/demo-subject.json";
-import { createId, getDb } from "./database";
+import { createId, withDbTransaction } from "./database";
 
 export async function seedDemoIfNeeded(): Promise<void> {
-  const db = await getDb();
+  await withDbTransaction(async (db) => {
   const existing = await db.getFirstAsync<{ count: number }>(
     "SELECT COUNT(*) count FROM subjects",
   );
   if ((existing?.count ?? 0) > 0) return;
   const now = Date.now();
   const s = demo.subject;
-  await db.withTransactionAsync(async () => {
     await db.runAsync(
       "INSERT INTO subjects VALUES(?,?,?,?,?,?,?,?,?)",
       s.subjectId,

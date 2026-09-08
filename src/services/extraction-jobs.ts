@@ -7,7 +7,7 @@ import {
   MAX_EXTRACTION_ATTEMPTS,
   type ExtractionJobStatus,
 } from "../core/extraction-jobs";
-import { createId, getDb } from "../db/database";
+import { assertDatabaseGeneration, captureDatabaseGeneration, createId, DatabaseReplacedError, getDb, withDbTransaction } from "../db/database";
 import { extractSubject, type ExtractionProgress } from "../ingest";
 import { scheduleImmediateExtractionWork } from "./extraction-scheduler";
 
@@ -255,6 +255,7 @@ export async function retryBackoffExtractions(): Promise<number> {
  * intentionally outside this guarantee because the OS suppresses all work.
  */
 export async function recoverPendingExtractionJobs(): Promise<number> {
+  const generation = captureDatabaseGeneration();
   const db = await getDb();
   const now = Date.now();
   const stale = await db.getAllAsync<{ job_id: string; subject_id: string }>(
@@ -263,7 +264,7 @@ export async function recoverPendingExtractionJobs(): Promise<number> {
     now,
   );
   for (const row of stale) {
-    await db.withTransactionAsync(async () => {
+    await withDbTransaction(async (db) => {
       await db.runAsync(
         `UPDATE extraction_jobs
          SET status='queued',trigger='startup',lease_token=NULL,
@@ -277,7 +278,7 @@ export async function recoverPendingExtractionJobs(): Promise<number> {
         "UPDATE materials SET status='pending' WHERE subject_id=? AND status='extracting'",
         row.subject_id,
       );
-    });
+    }, generation);
   }
 
   // Older builds classified an AI_RetryError whose outer message only said
@@ -303,7 +304,7 @@ export async function recoverPendingExtractionJobs(): Promise<number> {
       row.attempt_count >= MAX_EXTRACTION_ATTEMPTS
     )
       continue;
-    await db.withTransactionAsync(async () => {
+    await withDbTransaction(async (db) => {
       const result = await db.runAsync(
         `UPDATE extraction_jobs
             SET status='queued',trigger='startup',next_attempt_at=NULL,
@@ -319,7 +320,7 @@ export async function recoverPendingExtractionJobs(): Promise<number> {
         row.subject_id,
       );
       recoveredFailedIds.push(row.job_id);
-    });
+    }, generation);
   }
 
   const orphaned = await db.getAllAsync<{ subject_id: string }>(
@@ -334,6 +335,7 @@ export async function recoverPendingExtractionJobs(): Promise<number> {
       "UPDATE materials SET status='pending' WHERE subject_id=? AND status='extracting'",
       row.subject_id,
     );
+    assertDatabaseGeneration(generation);
     await enqueueExtraction(row.subject_id, "startup", {
       startImmediately: false,
     });
@@ -571,6 +573,7 @@ async function runExtractionWork(
   trigger: ExtractionJobTrigger,
   options: { preferredSubjectId?: string },
 ): Promise<ExtractionWorkResult> {
+  const generation = captureDatabaseGeneration();
   let lastResult: ExtractionWorkResult | null = null;
   let lastFailure: ExtractionWorkResult | null = null;
   let sawRetryableFailure = false;
@@ -581,6 +584,7 @@ async function runExtractionWork(
     // while already RUNNING may be ignored, so relying on another invocation
     // would leave the second subject waiting for the periodic fallback.
     while (true) {
+      assertDatabaseGeneration(generation);
       const acquired = await acquireNextJob(trigger, preferredSubjectId);
       preferredSubjectId = undefined;
       if (!acquired) {
@@ -609,12 +613,17 @@ async function runExtractionWork(
           reason: "empty",
         };
       }
-      lastResult = await runAcquiredExtraction(acquired);
+      assertDatabaseGeneration(generation);
+      lastResult = await runAcquiredExtraction(acquired, generation);
       if (lastResult.status === "failed") {
         lastFailure = lastResult;
         sawRetryableFailure ||= lastResult.retryable === true;
       }
     }
+  } catch (error) {
+    if (error instanceof DatabaseReplacedError)
+      return { status: "skipped", job: null, reason: "empty" };
+    throw error;
   } finally {
     // Keep a durable retry scheduled while work remains. Do not reconcile the
     // Expo periodic registration here: a foreground extraction promise can be
@@ -635,9 +644,11 @@ async function runExtractionWork(
 async function runAcquiredExtraction(acquired: {
   row: ExtractionJobDbRow;
   token: string;
-}): Promise<ExtractionWorkResult> {
+}, generation: number): Promise<ExtractionWorkResult> {
+  assertDatabaseGeneration(generation);
   const { row, token } = acquired;
   const runningJob = await readJobById(row.job_id);
+  assertDatabaseGeneration(generation);
   if (runningJob) announce(runningJob);
 
   // A killed JS runtime can leave a material in the transient extracting
@@ -652,18 +663,21 @@ async function runAcquiredExtraction(acquired: {
   let progressWrites = Promise.resolve();
   const heartbeat = setInterval(() => {
     progressWrites = progressWrites
-      .then(() => renewLease(row.job_id, token))
+      .then(() => { assertDatabaseGeneration(generation); return renewLease(row.job_id, token); })
       .catch(() => {});
   }, LEASE_HEARTBEAT_MS);
 
   try {
+    assertDatabaseGeneration(generation);
     await extractSubject(row.subject_id, (progress) => {
       progressWrites = progressWrites
-        .then(() => persistProgress(row.job_id, token, progress))
+        .then(() => { assertDatabaseGeneration(generation); return persistProgress(row.job_id, token, progress); })
         .catch(() => {});
-    });
+    }, generation);
     await progressWrites;
+    assertDatabaseGeneration(generation);
     const failure = await materialFailure(row.subject_id);
+    assertDatabaseGeneration(generation);
     if (failure) {
       const failed = await failJob(row, token, failure);
       return { status: "failed", ...failed };
@@ -674,6 +688,7 @@ async function runAcquiredExtraction(acquired: {
     };
   } catch (error) {
     await progressWrites;
+    assertDatabaseGeneration(generation);
     const failed = await failJob(row, token, error);
     return { status: "failed", ...failed };
   } finally {

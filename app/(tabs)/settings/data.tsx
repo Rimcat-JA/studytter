@@ -3,7 +3,7 @@ import * as Sharing from "expo-sharing";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
-import { createExportFile, importData } from "../../../src/services/data";
+import { createExportFile, readImportFile, restoreData } from "../../../src/services/data";
 import {
   Button,
   Card,
@@ -33,14 +33,17 @@ export default function DataSettings() {
     }
   };
   const chooseImport = async () => {
+    setBusy(true);
+    try {
     const result = await DocumentPicker.getDocumentAsync({
       type: "application/json",
       copyToCacheDirectory: true,
     });
     if (result.canceled) return;
+    const backup = await readImportFile(result.assets[0].uri);
     Alert.alert(
       "すべてのデータを置き換えますか？",
-      "現在の科目、投稿、学習履歴は削除され、選択したバックアップに置き換わります。APIキーは変更されません。元に戻せません。",
+      `検証済みのバックアップ（${backup.subjects.length}科目・${backup.posts.length}投稿）で現在の科目、投稿、学習履歴を置き換えます。APIキー・接続先・端末設定は保持します。実行中の生成・抽出は中止します。元の教材ファイルはバックアップに含まれません。`,
       [
         { text: "キャンセル" },
         {
@@ -49,7 +52,7 @@ export default function DataSettings() {
           onPress: async () => {
             setBusy(true);
             try {
-              await importData(result.assets[0].uri);
+              await restoreData(backup);
               Alert.alert("読み込みました", "ホームに戻ると反映されます。");
               router.replace("/(tabs)");
             } catch (e) {
@@ -64,6 +67,11 @@ export default function DataSettings() {
         },
       ],
     );
+    } catch (e) {
+      Alert.alert("読み込めませんでした", e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <Screen>
@@ -79,6 +87,7 @@ export default function DataSettings() {
         <Card>
           <Text style={styles.title}>{t("dataExportTitle")}</Text>
           <Text style={commonStyles.subtitle}>{t("dataExportHelp")}</Text>
+          <Text style={commonStyles.subtitle}>教材ファイル、APIキー、接続先、端末設定は含まれません。</Text>
           <Button disabled={busy} title={t("export")} onPress={exportJson} />
         </Card>
         <Card>

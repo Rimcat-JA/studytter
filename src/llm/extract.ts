@@ -15,7 +15,11 @@ export async function extractMaterialChunk(options: {
   pageStart?: number;
   pageEnd?: number;
   firstChunk: boolean;
+  databaseGeneration?: number;
 }): Promise<ExtractionChunk> {
+  const { assertDatabaseGeneration, captureDatabaseGeneration } = await import("../db/database");
+  const generation = options.databaseGeneration ?? captureDatabaseGeneration();
+  assertDatabaseGeneration(generation);
   const provider = createProvider(options.providerId);
   const file = new File(options.fileUri);
   const data = await file.base64();
@@ -38,6 +42,7 @@ export async function extractMaterialChunk(options: {
   let lastValidationMessage = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
+      assertDatabaseGeneration(generation);
       const result = await provider.generateJson({
         model: options.model,
         system: SYSTEM,
@@ -53,11 +58,13 @@ export async function extractMaterialChunk(options: {
         schema: ExtractionChunkSchema,
         maxTokens: 8_000,
       });
+      assertDatabaseGeneration(generation);
       await logUsage(
         options.providerId,
         options.model,
         "extraction",
         result.usage,
+        generation,
       );
       return ExtractionChunkSchema.parse(result.data);
     } catch (error) {

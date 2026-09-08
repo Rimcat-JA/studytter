@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { createId, getDb, getPost, type PostRow } from "../../src/db/database";
+import { captureDatabaseGeneration, createId, getDb, getPost, type PostRow } from "../../src/db/database";
 import { getPurposeRoute } from "../../src/llm/config";
 import { streamDeepDive } from "../../src/llm/deepdive";
 import {
@@ -34,6 +34,7 @@ import { Field, Header, Loading, Screen } from "../../src/ui/components";
 import { colors } from "../../src/ui/theme";
 
 type Cancellation = {
+  generation: number;
   cancelled: boolean;
   controller: AbortController;
 };
@@ -62,10 +63,10 @@ export default function PostDetail() {
   }, []);
 
   const persistThread = useCallback(
-    async (postId: string, next: DeepDiveThread) => {
+    async (postId: string, next: DeepDiveThread, generation: number) => {
       saveQueueRef.current = saveQueueRef.current
         .catch(() => undefined)
-        .then(() => saveDeepDiveThread(postId, next));
+        .then(() => saveDeepDiveThread(postId, next, generation));
       await saveQueueRef.current;
     },
     [],
@@ -80,6 +81,7 @@ export default function PostDetail() {
       options: { question?: string; retryAssistantId?: string } = {},
     ) => {
       if (cancellationRef.current) return;
+      const generation = captureDatabaseGeneration();
 
       const { providerId: provider, model } = await getPurposeRoute("deepdive");
       const assistantId = options.retryAssistantId ?? createId("ddm");
@@ -96,6 +98,7 @@ export default function PostDetail() {
             modelId: model,
           }).thread;
       const cancellation: Cancellation = {
+        generation,
         cancelled: false,
         controller: new AbortController(),
       };
@@ -109,7 +112,7 @@ export default function PostDetail() {
       try {
         // Persist the question and streaming placeholder before making a
         // network request, so a process kill cannot erase the user's turn.
-        await persistThread(currentPost.id, started);
+        await persistThread(currentPost.id, started, generation);
         const history = promptHistoryBefore(started, assistantId);
         for await (const chunk of streamDeepDive({
           providerId: provider,
@@ -122,6 +125,7 @@ export default function PostDetail() {
           history,
           abortSignal: cancellation.controller.signal,
           shouldStop: () => cancellation.cancelled,
+          databaseGeneration: generation,
         })) {
           if (cancellation.cancelled) break;
           answer += chunk;
@@ -133,7 +137,7 @@ export default function PostDetail() {
           showThread(next);
           const now = Date.now();
           if (now - lastPersistedAt >= 300) {
-            await persistThread(currentPost.id, next);
+            await persistThread(currentPost.id, next, generation);
             lastPersistedAt = now;
           }
         }
@@ -156,7 +160,7 @@ export default function PostDetail() {
               },
             );
             showThread(interrupted);
-            await persistThread(currentPost.id, interrupted);
+            await persistThread(currentPost.id, interrupted, generation);
           }
           return;
         }
@@ -169,7 +173,7 @@ export default function PostDetail() {
           updatedAt: Date.now(),
         });
         showThread(complete);
-        await persistThread(currentPost.id, complete);
+        await persistThread(currentPost.id, complete, generation);
       } catch (error) {
         if (cancellation.cancelled && cancellationRef.current !== cancellation)
           return;
@@ -184,7 +188,7 @@ export default function PostDetail() {
         });
         showThread(failed);
         try {
-          await persistThread(currentPost.id, failed);
+          await persistThread(currentPost.id, failed, generation);
         } catch {
           // The visible state still keeps the user's question and partial reply.
         }
@@ -214,7 +218,7 @@ export default function PostDetail() {
     cancellationRef.current = null;
     activeAssistantIdRef.current = null;
     setStreaming(false);
-    void persistThread(id, interrupted).catch(() => undefined);
+    void persistThread(id, interrupted, cancellation.generation).catch(() => undefined);
   }, [id, persistThread, showThread]);
 
   useEffect(() => {

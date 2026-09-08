@@ -1,6 +1,14 @@
 node_modules/
 .expo/
 dist/
+dist-*/
+companion/build/
+companion/dist/
+companion/.venv/
+companion/.venv-*/
+companion/__pycache__/
+companion/tests/__pycache__/
+*.spec
 coverage/
 *.log
 .DS_Store

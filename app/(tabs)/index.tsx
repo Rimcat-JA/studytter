@@ -1,6 +1,6 @@
 import { FlashList, type ViewToken } from "@shopify/flash-list";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   Pressable,
   RefreshControl,
@@ -35,35 +35,68 @@ export default function FeedScreen() {
   const [posts, setPosts] = useState<PostRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [savedOnly, setSavedOnly] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const loadVersion = useRef(0);
+  const focusVersion = useRef(0);
+  const refreshScope = useRef<number | null>(null);
   const visible = useRef(new Map<string, number>());
-  const load = useCallback(async () => {
-    const [s, p] = await Promise.all([
-      listSubjects(),
-      loadRankedFeed(selected ?? undefined),
-    ]);
-    setSubjects(s.filter((x) => x.enabled));
-    setPosts(p);
-    setLoading(false);
-  }, [selected]);
+  const load = useCallback(async (scope: number) => {
+    if (scope !== focusVersion.current) return;
+    const version = ++loadVersion.current;
+    try {
+      const [s, p] = await Promise.all([
+        listSubjects(),
+        loadRankedFeed(selected ?? undefined, { savedOnly }),
+      ]);
+      if (version !== loadVersion.current || scope !== focusVersion.current) return;
+      const enabled = s.filter((x) => x.enabled);
+      setSubjects(enabled);
+      if (selected && !enabled.some((x) => x.subject_id === selected)) {
+        setSelected(null);
+        return;
+      }
+      setPosts(p);
+      setError(null);
+    } catch (cause) {
+      if (version === loadVersion.current && scope === focusVersion.current)
+        setError(cause instanceof Error ? cause.message : "フィードを読み込めませんでした。");
+    } finally {
+      if (version === loadVersion.current && scope === focusVersion.current) setLoading(false);
+    }
+  }, [selected, savedOnly, setSelected]);
   useFocusEffect(
     useCallback(() => {
-      load();
+      const scope = ++focusVersion.current;
+      setLoading(true);
+      setRefreshing(false);
+      refreshScope.current = null;
+      void load(scope);
+      const unsubscribe = subscribeToGeneratedPosts(() => { void load(scope); });
+      return () => {
+        focusVersion.current++;
+        loadVersion.current++;
+        visible.current.clear();
+        unsubscribe();
+      };
     }, [load]),
   );
-  useEffect(() => {
-    const unsubscribe = subscribeToGeneratedPosts(() => {
-        void load();
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, [load]);
   const refresh = async () => {
+    const scope = focusVersion.current;
+    if (refreshScope.current === scope) return;
+    refreshScope.current = scope;
     setRefreshing(true);
-    await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
-    await requestAutoGeneration("pull_refresh");
-    await load();
-    setRefreshing(false);
+    try {
+      const result = savedOnly ? null : await requestAutoGeneration("pull_refresh", { subjectId: selected ?? undefined });
+      if (scope !== focusVersion.current) return;
+      await load(scope);
+      if (scope === focusVersion.current && result?.status === "failed") setError(result.errorMessage ?? "投稿を生成できませんでした。");
+    } catch (cause) {
+      if (scope === focusVersion.current) setError(cause instanceof Error ? cause.message : "更新できませんでした。");
+    } finally {
+      if (refreshScope.current === scope) refreshScope.current = null;
+      if (scope === focusVersion.current) setRefreshing(false);
+    }
   };
   const viewability = useCallback(
     ({ changed }: { changed: ViewToken<PostRow>[] }) => {
@@ -102,36 +135,38 @@ export default function FeedScreen() {
         >
           <Chip
             label={t("forYou")}
-            active={!selected}
-            onPress={() => setSelected(null)}
+            active={!selected && !savedOnly}
+            onPress={() => { setSavedOnly(false); setSelected(null); }}
           />
+          <Chip label="保存済み" active={savedOnly} onPress={() => { setSavedOnly(true); setSelected(null); }} />
           {subjects.map((s) => (
             <Chip
               key={s.subject_id}
               label={s.display_name}
-              active={selected === s.subject_id}
-              onPress={() => setSelected(s.subject_id)}
+              active={!savedOnly && selected === s.subject_id}
+              onPress={() => { setSavedOnly(false); setSelected(s.subject_id); }}
               onLongPress={() => router.push("/(tabs)/settings/subjects")}
             />
           ))}
         </ScrollView>
       </View>
+      {error && <Pressable style={styles.error} onPress={() => void load(focusVersion.current)}><Text style={styles.link}>{error}（タップして再読込）</Text></Pressable>}
       {loading ? (
         <Loading />
       ) : posts.length === 0 ? (
         <Empty
-          title={t("emptyFeed")}
+          title={savedOnly ? "保存済みの投稿はありません" : t("emptyFeed")}
           action={
-            <Pressable onPress={() => router.push("/subject/new")}>
-              <Text style={styles.link}>{t("createSubject")}</Text>
-            </Pressable>
+            savedOnly ? undefined : <View style={{ gap: 16 }}><Pressable onPress={() => void refresh()} disabled={refreshing}>
+              <Text style={styles.link}>{refreshing ? "更新中…" : "投稿を補充・再読込"}</Text>
+            </Pressable><Pressable onPress={() => router.push("/subject/new")}><Text style={styles.link}>{t("createSubject")}</Text></Pressable></View>
           }
         />
       ) : (
         <FlashList
           data={posts}
           keyExtractor={(p) => p.id}
-          renderItem={({ item }) => <PostCard post={item} />}
+          renderItem={({ item }) => <PostCard post={item} onBookmarkChange={() => { if (savedOnly) void load(focusVersion.current); }} />}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -143,7 +178,10 @@ export default function FeedScreen() {
           onViewableItemsChanged={viewability}
           onEndReachedThreshold={0.25}
           onEndReached={() => {
-            void requestAutoGeneration("feed_end");
+            const scope = focusVersion.current;
+            if (!savedOnly) void requestAutoGeneration("feed_end", { subjectId: selected ?? undefined }).catch((cause) => {
+              if (scope === focusVersion.current) setError(String(cause));
+            });
           }}
         />
       )}
@@ -174,6 +212,7 @@ function Chip({
   );
 }
 const styles = StyleSheet.create({
+  error: { padding: 12 },
   chipsWrap: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.line,

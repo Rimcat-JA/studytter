@@ -11,7 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { getDb, listSubjects, type SubjectRow } from "../../../src/db/database";
+import { getDb, listSubjects, withDbTransaction, type SubjectRow } from "../../../src/db/database";
 import {
   copyMaterials,
   removeMaterial,
@@ -151,13 +151,16 @@ export default function Subjects() {
           text: "完全に削除",
           style: "destructive",
           onPress: async () => {
-            const db = await getDb();
             for (const m of materials[subject.subject_id] ?? [])
               try {
                 const f = new File(m.file_uri);
                 if (f.exists) f.delete();
               } catch {}
-            await db.withTransactionAsync(async () => {
+            await withDbTransaction(async (db) => {
+              await db.runAsync(
+                "DELETE FROM quiz_attempts WHERE post_id IN (SELECT id FROM posts WHERE subject_id=?)",
+                subject.subject_id,
+              );
               await db.runAsync(
                 "DELETE FROM interactions WHERE post_id IN (SELECT id FROM posts WHERE subject_id=?)",
                 subject.subject_id,

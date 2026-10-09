@@ -14,6 +14,9 @@ export function requestDeadline(timeoutMs: number, parent?: AbortSignal) {
     dispose: () => {
       clearTimeout(timer);
       parent?.removeEventListener("abort", cancel);
+      // In browsers a post-completion abort surfaces as an unhandled
+      // AbortError from fetch internals; the request is already settled.
+      if (typeof document !== "undefined") return;
       if (!controller.signal.aborted) controller.abort();
     },
   };
@@ -22,6 +25,17 @@ export function requestDeadline(timeoutMs: number, parent?: AbortSignal) {
 /** SDK transports must use the same redirect policy as credential probes. */
 export const providerFetch: typeof fetch = (input, init) =>
   globalThis.fetch(input, { ...init, redirect: "error" });
+
+// Web demo debugging: show the provider's own reason, with key-like tokens redacted.
+function webErrorDetail(body: unknown): string {
+  if (typeof window === "undefined" || typeof body !== "string" || !body) return "";
+  let text = body;
+  try {
+    const e = JSON.parse(body).error;
+    text = [e?.message, e?.metadata?.raw].filter(Boolean).join(" | ") || body;
+  } catch {}
+  return " " + String(text).replace(/(sk|key)[-_][A-Za-z0-9_-]{8,}/gi, "[redacted]").slice(0, 400);
+}
 
 /** API/Retry errors can contain echoed credentials in both message and body.
  * Preserve status/backoff metadata without retaining the server's raw text. */
@@ -41,7 +55,7 @@ export function sanitizeProviderError(input: unknown): unknown {
         : status === 429 ? `Provider rate limit reached (${status}).`
         : [400, 404, 422].includes(status) ? `Provider rejected the request, model or endpoint (${status}).`
         : `Provider request failed (${status}).`;
-      const safe = new Error(message) as Error & { status: number; statusCode: number; responseHeaders?: Record<string, string> };
+      const safe = new Error(message + webErrorDetail(item.responseBody)) as Error & { status: number; statusCode: number; responseHeaders?: Record<string, string> };
       safe.status = status;
       safe.statusCode = status;
       if (item.responseHeaders && typeof item.responseHeaders === "object") {

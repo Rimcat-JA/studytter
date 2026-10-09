@@ -19,7 +19,7 @@ describe("quiz invariants", () => {
   it("validates the complete requested batch before persistence", () => {
     expect(() => validateGeneratedPosts({ posts: [{ jobIndex: 0, text: "Question" }] }, ["quiz"])).toThrow(/quiz is required/);
     expect(() => validateGeneratedPosts({ posts: [{ jobIndex: 1, text: "Question", quiz }] }, ["quiz"])).toThrow(/exactly once/);
-    expect(() => validateGeneratedPosts({ posts: [{ jobIndex: 0, text: "Question", quiz }] }, ["explainer"])).toThrow(/unexpected quiz/);
+    expect(validateGeneratedPosts({ posts: [{ jobIndex: 0, text: "Question", quiz }] }, ["explainer"]).posts[0].quiz).toBeUndefined();
     expect(validateGeneratedPosts({ posts: [{ jobIndex: 0, text: "Question", quiz }] }, ["quiz"]).posts).toHaveLength(1);
   });
 });

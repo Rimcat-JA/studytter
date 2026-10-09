@@ -204,7 +204,16 @@ function announce(inserted: number) {
 let inFlight: Promise<AutoGenerationResult> | null = null;
 const LEASE_DURATION_MS = 15 * 60_000;
 
+// Web runs in a single tab with no OS worker: a lease left by a reload is stale.
+let staleWebLeaseCleared = false;
+
 async function acquireGenerationLease(generation: number): Promise<string | null> {
+  if (typeof document !== "undefined" && !staleWebLeaseCleared) {
+    staleWebLeaseCleared = true;
+    await (await getDbForGeneration(generation)).runAsync(
+      "UPDATE generation_runtime SET lease_token=NULL,lease_expires_at=0 WHERE id=1",
+    );
+  }
   const now = Date.now();
   const token = createId("generation_lease");
   const result = await (

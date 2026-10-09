@@ -41,7 +41,16 @@ export const ExtractionChunkSchema = z.object({
   profile: z
     .object({
       domainStyle: z.enum(["problem_solving", "memorization", "mixed"]),
-      formatWeights: z.record(LearningFormatSchema, z.number().nonnegative()),
+      // Explicit keys instead of z.record: provider JSON-schema validators
+      // reject `propertyNames` objects that have no `properties`.
+      formatWeights: z.object({
+        explainer: z.number().nonnegative(),
+        quiz: z.number().nonnegative(),
+        funfact: z.number().nonnegative(),
+        misconception: z.number().nonnegative(),
+        comparison: z.number().nonnegative(),
+        mnemonic: z.number().nonnegative(),
+      }),
       contentLang: ContentLangSchema,
       suggestedHandle: z.string().min(1),
       suggestedDisplayName: z.string().min(1),
@@ -90,8 +99,9 @@ export function validateGeneratedPosts(data: unknown, formats: readonly string[]
   for (const post of parsed.posts) {
     if (formats[post.jobIndex] === "quiz" && !post.quiz)
       throw new Error(`Generated posts validation failed: quiz is required for jobIndex ${post.jobIndex}.`);
-    if (formats[post.jobIndex] !== "quiz" && post.quiz)
-      throw new Error(`Generated posts validation failed: unexpected quiz for jobIndex ${post.jobIndex}.`);
+    // Models without strict schemas often attach a quiz to every post; keep
+    // the post and drop the quiz instead of rejecting the whole batch.
+    if (formats[post.jobIndex] !== "quiz" && post.quiz) delete post.quiz;
   }
   return parsed;
 }

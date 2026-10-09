@@ -51,6 +51,15 @@ Stored API keys and custom headers are bound to their approved Base URL. Changin
 
 Settings → Automatic post generation controls the unread pool, batch size, foreground/background intervals, and daily safety limit. Feed refill remains deferrable background work. Material extraction is different: it starts immediately in a notification-backed Android foreground WorkManager, persists progress in SQLite, and resumes stale work after process or device restart. Removing the app from Android's recent-apps list does not cancel the extraction. Android's explicit Settings → Force stop is OS-enforced and prevents every app job from running until the user launches the app again.
 
+## Run on the web (demo)
+
+```bash
+pnpm install
+pnpm web
+```
+
+The web build is best-effort and intended for demos. Native-only modules are replaced by small web shims (`web-shims/`, wired in `metro.config.js`): API keys are kept in `localStorage`, picked materials are held in memory for the lifetime of the tab, and extraction runs in the open tab instead of an OS worker. Do not reload the page while a material is being extracted.
+
 ### PDF page ranges
 
 The app reads the PDF page count and creates real excerpts of at most 20 pages per provider request. Original page numbers are preserved in the extraction prompt and source anchors. An unspecified range processes the complete PDF up to 150 pages; larger selections are rejected with a page-range message. Corrupt and password-protected PDFs stop with an actionable review-screen error instead of being uploaded repeatedly.

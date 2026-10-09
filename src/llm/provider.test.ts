@@ -22,7 +22,7 @@ vi.mock("expo-secure-store", () => ({
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: mocks.openai }));
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: mocks.anthropic }));
 vi.mock("@ai-sdk/google", () => ({ createGoogleGenerativeAI: mocks.google }));
-vi.mock("ai", () => ({ generateText: mocks.generate, streamText: mocks.stream, Output: { object: (value: unknown) => value } }));
+vi.mock("ai", () => ({ generateText: mocks.generate, streamText: mocks.stream, Output: { object: (value: unknown) => value }, jsonSchema: (value: unknown) => value }));
 
 const request = { model: "test-model", system: "JSON", user: [{ type: "text" as const, text: "ok" }], schema: z.object({ ok: z.boolean() }), maxTokens: 100 };
 

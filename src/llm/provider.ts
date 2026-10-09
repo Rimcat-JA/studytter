@@ -3,6 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import {
   generateText,
+  jsonSchema,
   Output,
   streamText,
   type FilePart,
@@ -229,6 +230,40 @@ async function modelFor(
   return openAI.chat(modelId);
 }
 
+/** Some routed models return the object as a JSON string or under one wrapper key. */
+function unwrapStructuredOutput(output: unknown): unknown {
+  let value = output;
+  if (typeof value === "string") { try { value = JSON.parse(value); } catch { return output; } }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 1 && entries[0][1] && typeof entries[0][1] === "object" && !Array.isArray(entries[0][1]))
+      return entries[0][1];
+  }
+  return value;
+}
+
+const PROVIDER_SCHEMA_DROP = new Set([
+  "$schema", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+  "minLength", "maxLength", "minItems", "maxItems", "pattern", "format", "propertyNames",
+]);
+
+/** Plain-JSON-Schema view of a Zod schema without serving-heavy constraints. */
+export function providerJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const strip = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(strip);
+    if (!node || typeof node !== "object") return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) {
+      if (PROVIDER_SCHEMA_DROP.has(key)) continue;
+      // Gemini only accepts string enums; numeric consts are restored by Zod.
+      if (key === "const") { if (typeof value === "string") out.enum = [value]; continue; }
+      out[key] = key === "properties" ? Object.fromEntries(Object.entries(value as object).map(([k, v]) => [k, strip(v)])) : strip(value);
+    }
+    return out;
+  };
+  return strip(z.toJSONSchema(schema, { io: "output", unrepresentable: "any" })) as Record<string, unknown>;
+}
+
 export function createProvider(
   id: ProviderId,
   overrides?: ProviderRuntimeOverrides,
@@ -251,8 +286,14 @@ export function createProvider(
         model,
         system: opts.system,
         messages: [{ role: "user", content: opts.user as UserContent }],
-        output: Output.object({ schema: opts.schema }),
+        // Send a constraint-free schema: Gemini rejects bounded numbers,
+        // length limits and maxItems ("too many states"). Zod below still
+        // enforces every constraint on the returned object.
+        output: Output.object({ schema: jsonSchema(providerJsonSchema(opts.schema)) }),
         maxOutputTokens: opts.maxTokens,
+        // OpenRouter-routed models (e.g. Gemini) reject OpenAI strict schemas
+        // with optional fields; Zod validation below still enforces the shape.
+        providerOptions: { openai: { strictJsonSchema: false } },
         // Extraction has a separate schema-correction retry. Keep transport
         // retries bounded so a temporary outage does not fan out excessively.
         maxRetries: 1,
@@ -260,8 +301,18 @@ export function createProvider(
       });
       if (!result.output)
         throw new Error("The provider returned no structured output.");
+      let parsed = opts.schema.safeParse(result.output);
+      if (!parsed.success) {
+        const unwrapped = unwrapStructuredOutput(result.output);
+        if (unwrapped !== result.output) {
+          const retry = opts.schema.safeParse(unwrapped);
+          if (retry.success) parsed = retry;
+        }
+      }
+      if (!parsed.success)
+        throw new Error(`Schema validation failed: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
       return {
-        data: opts.schema.parse(result.output),
+        data: parsed.data,
         usage: {
           inputTokens: result.usage.inputTokens ?? 0,
           outputTokens: result.usage.outputTokens ?? 0,

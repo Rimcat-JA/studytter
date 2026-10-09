@@ -17,6 +17,12 @@ export type ExtractionScheduleMode =
  * development builds and other platforms.
  */
 export async function scheduleImmediateExtractionWork(): Promise<ExtractionScheduleMode> {
+  if (Platform.OS === "web") {
+    // No OS worker on web: run extraction in the open tab.
+    const { requestExtractionWork } = await import("./extraction-jobs");
+    void requestExtractionWork("foreground").catch((e) => console.error(e));
+    return "unavailable";
+  }
   let periodicRegistered = false;
   try {
     // The native WorkManager bridge dispatches through Expo TaskManager. Its

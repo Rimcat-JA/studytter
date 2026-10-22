@@ -151,12 +151,18 @@ export default function Subjects() {
           text: "完全に削除",
           style: "destructive",
           onPress: async () => {
-            for (const m of materials[subject.subject_id] ?? [])
-              try {
-                const f = new File(m.file_uri);
-                if (f.exists) f.delete();
-              } catch {}
             await withDbTransaction(async (db) => {
+              // Topic-level learning state is keyed by "<subjectId>:<topic>".
+              await db.runAsync(
+                "DELETE FROM user_topic_state WHERE substr(topic_key,1,length(?)+1)=?||':'",
+                subject.subject_id,
+                subject.subject_id,
+              );
+              await db.runAsync(
+                "DELETE FROM bandit_arms WHERE substr(topic_key,1,length(?)+1)=?||':'",
+                subject.subject_id,
+                subject.subject_id,
+              );
               await db.runAsync(
                 "DELETE FROM quiz_attempts WHERE post_id IN (SELECT id FROM posts WHERE subject_id=?)",
                 subject.subject_id,
@@ -190,6 +196,13 @@ export default function Subjects() {
                 subject.subject_id,
               );
             });
+            // Delete files only after the rows are gone, so a failed
+            // transaction never leaves materials pointing at missing files.
+            for (const m of materials[subject.subject_id] ?? [])
+              try {
+                const f = new File(m.file_uri);
+                if (f.exists) f.delete();
+              } catch {}
             await load();
           },
         },

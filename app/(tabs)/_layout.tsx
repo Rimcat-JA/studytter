@@ -12,7 +12,10 @@ export default function TabsLayout() {
   const { t } = useTranslation();
   return (
     <ScreenSafeAreaProvider edges={["bottom"]}>
+      {/* Settings sub-pages are hidden tabs; "history" makes back return to the
+          Settings list instead of the first tab (the default "firstRoute"). */}
       <Tabs
+        backBehavior="history"
         screenOptions={{
           headerShown: false,
           tabBarPosition: "top",
@@ -57,6 +60,8 @@ export default function TabsLayout() {
         <Tabs.Screen name="settings/data" options={{ href: null }} />
         <Tabs.Screen name="settings/notifications" options={{ href: null }} />
         <Tabs.Screen name="settings/debug" options={{ href: null }} />
+        {/* Undeclared routes are appended as visible tabs by expo-router. */}
+        <Tabs.Screen name="settings/companion" options={{ href: null }} />
       </Tabs>
     </ScreenSafeAreaProvider>
   );

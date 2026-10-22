@@ -34,6 +34,7 @@ import {
   getProviderHeaders,
   listProviderModels,
   setApiKey,
+  assertProviderHeadersBinding,
   setProviderHeaders,
   testProviderCredentials,
   validateProviderHeaders,
@@ -271,7 +272,7 @@ export default function Providers() {
       // Validate every draft before saving any profile or route.
       for (const providerId of PROVIDER_IDS) {
         normalizeBaseUrl(profiles[providerId].baseUrl);
-        parseHeaders(profiles[providerId].headersText);
+        await assertProviderHeadersBinding(providerId, parseHeaders(profiles[providerId].headersText), profiles[providerId].baseUrl);
         const current = await getProviderConfig(providerId);
         if (providerId !== "ollama" && profiles[providerId].configured && !profiles[providerId].apiKey.trim() && normalizeBaseUrl(current.baseUrl) !== normalizeBaseUrl(profiles[providerId].baseUrl))
           throw new Error(`${providerName(providerId)}: Base URLを変更する場合はAPIキーを再入力してください。`);

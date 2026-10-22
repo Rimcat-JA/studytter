@@ -31,9 +31,21 @@ export function reviewMemory(
   correct: boolean,
   now = Date.now(),
 ): AtomMemoryState {
+  // Massed practice (several quiz posts of one atom answered back to back)
+  // must not compound stability: the gain scales with how much of the
+  // current stability interval has actually elapsed (spacing effect).
+  const spacing =
+    memory.lastReviewedAt === null
+      ? 1
+      : clamp01(
+          Math.max(0, now - memory.lastReviewedAt) /
+            DAY_MS /
+            Math.max(CONFIG.minStabilityDays, memory.stabilityDays),
+        );
   return {
     stabilityDays: correct
-      ? memory.stabilityDays * CONFIG.srsCorrectMultiplier
+      ? memory.stabilityDays *
+        (1 + (CONFIG.srsCorrectMultiplier - 1) * spacing)
       : Math.max(
           CONFIG.minStabilityDays,
           memory.stabilityDays * CONFIG.srsWrongMultiplier,

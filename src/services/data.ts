@@ -1,5 +1,6 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { withDatabaseRestore, withDbTransaction } from "../db/database";
+import { DEFAULT_FORMAT_WEIGHTS } from "../core/config";
 import { ImportSchema } from "../llm/schemas";
 
 const TABLES = [
@@ -116,6 +117,32 @@ const COLUMNS: Record<(typeof TABLES)[number], readonly string[]> = {
   ],
 };
 
+const SYNTHETIC_MATERIAL_URI = /^(asset|studytter-package):\/\//;
+export const isSyntheticMaterialUri = (uri: string) => SYNTHETIC_MATERIAL_URI.test(uri);
+
+type ExportRow = Record<string, unknown>;
+
+/** Earlier versions could store values the restore validator rejects (an
+ * emptied subject name, all-zero weights, negative dwell/cost). Normalize
+ * them in the snapshot so existing installs can still produce a backup. */
+function repairLegacyExportRows(data: Record<string, unknown>) {
+  for (const subject of (data.subjects ?? []) as ExportRow[]) {
+    const name = String(subject.display_name ?? "").trim();
+    subject.display_name = (name || String(subject.handle || subject.subject_id)).slice(0, 500);
+    try {
+      const weights = JSON.parse(String(subject.format_weights_json)) as Record<string, number>;
+      if (!Object.values(weights).some((weight) => weight > 0))
+        subject.format_weights_json = JSON.stringify(DEFAULT_FORMAT_WEIGHTS);
+    } catch {
+      subject.format_weights_json = JSON.stringify(DEFAULT_FORMAT_WEIGHTS);
+    }
+  }
+  for (const row of (data.interactions ?? []) as ExportRow[])
+    if (typeof row.dwell_ms === "number") row.dwell_ms = Math.max(0, Math.round(row.dwell_ms));
+  for (const row of (data.usageLog ?? []) as ExportRow[])
+    if (typeof row.est_cost_usd === "number") row.est_cost_usd = Math.max(0, row.est_cost_usd);
+}
+
 export async function createExportFile(): Promise<File> {
   const data: Record<string, unknown> = {
     schemaVersion: 2,
@@ -128,6 +155,13 @@ export async function createExportFile(): Promise<File> {
     for (let i = 0; i < TABLES.length; i++)
       data[EXPORT_KEYS[i]] = await db.getAllAsync(`SELECT * FROM ${TABLES[i]}`);
   });
+  repairLegacyExportRows(data);
+  // Restore is all-or-nothing, so never hand the user a file it would reject.
+  const checked = ImportSchema.safeParse(data);
+  if (!checked.success) {
+    const issue = checked.error.issues[0];
+    throw new Error(`バックアップを作成できません。復元できないデータがあります（${issue?.path.join(".") ?? "?"}: ${issue?.message ?? ""}）。`);
+  }
   const file = new File(
     new Directory(Paths.cache),
     `learnstream-export-${new Date().toISOString().slice(0, 10)}.json`,
@@ -174,11 +208,19 @@ export async function restoreData(value: unknown): Promise<void> {
       "SELECT material_id,file_uri FROM materials",
     )).map((row) => [row.material_id, row.file_uri]));
     for (const material of parsed.materials) {
+      // Synthetic sources (bundled demo, Companion packages) are not local
+      // paths and never had a file to re-attach, so they are kept verbatim.
+      if (isSyntheticMaterialUri(material.file_uri)) continue;
       const hasLocalFile = material.file_uri !== "" && localMaterials.get(material.material_id) === material.file_uri;
       if (!hasLocalFile) material.file_uri = "";
-      if (material.status !== "replaced" && (!hasLocalFile || material.status === "pending" || material.status === "extracting")) {
+      // Completed materials already have their atoms and posts; only work that
+      // still needs the original file must be re-attached.
+      if (material.status === "replaced" || material.status === "done") continue;
+      if (!hasLocalFile || material.status === "pending" || material.status === "extracting") {
         material.status = "failed";
-        material.error_message = "バックアップに元の教材ファイルは含まれません。教材を差し替えて抽出を再開してください。";
+        material.error_message = hasLocalFile
+          ? "復元前に抽出が中断されました。抽出を再開してください。"
+          : "バックアップに元の教材ファイルは含まれません。教材を差し替えて抽出を再開してください。";
       }
     }
     // Pending jobs and leases refer to the replaced database and must not

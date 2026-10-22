@@ -51,6 +51,16 @@ export type Format =
   | "mnemonic"
   | "entertainment";
 
+/** Initial mix for new subjects and the fallback when a stored mix is unusable. */
+export const DEFAULT_FORMAT_WEIGHTS: Record<Exclude<Format, "entertainment">, number> = {
+  explainer: 0.3,
+  quiz: 0.3,
+  funfact: 0.1,
+  misconception: 0.1,
+  comparison: 0.1,
+  mnemonic: 0.1,
+};
+
 export const LEARNING_FORMATS: readonly Exclude<Format, "entertainment">[] = [
   "explainer",
   "quiz",

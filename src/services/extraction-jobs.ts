@@ -526,7 +526,7 @@ async function materialFailure(subjectId: string): Promise<Error | null> {
     await getDb()
   ).getAllAsync<{ filename: string; error_message: string | null }>(
     `SELECT filename,error_message FROM materials
-     WHERE subject_id=? AND status='failed' ORDER BY added_at`,
+     WHERE subject_id=? AND status='failed' AND file_uri!='' ORDER BY added_at`,
     subjectId,
   );
   if (!failed.length) return null;

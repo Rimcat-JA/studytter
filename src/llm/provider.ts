@@ -4,6 +4,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import {
   generateText,
   jsonSchema,
+  NoOutputGeneratedError,
   Output,
   streamText,
   type FilePart,
@@ -112,12 +113,30 @@ export async function deleteApiKey(
   await SecureStore.deleteItemAsync(`${KEY_PREFIX}${provider}`);
 }
 
+const HEADERS_REBOUND_MESSAGE = "Base URLを変更したため、追加ヘッダーを消去して新しい接続先の値を入力してください。";
+const reusesSavedHeader = (saved: Record<string, string>, supplied: Record<string, string>) =>
+  Object.entries(saved).some(([name, value]) => Object.entries(supplied).some(([candidate, given]) => candidate.toLowerCase() === name.toLowerCase() && given === value));
+
+/** Secret header values approved for one Base URL must not silently follow a
+ * changed URL. Callers validate all drafts with this before saving any. */
+export async function assertProviderHeadersBinding(
+  provider: ProviderId,
+  headers: Record<string, string>,
+  baseUrl?: string,
+): Promise<void> {
+  const saved = await storedHeaders(provider);
+  const target = normalizeBaseUrl(baseUrl ?? (await getProviderConfig(provider)).baseUrl);
+  if (Object.keys(saved.headers).length && normalizeBaseUrl(saved.baseUrl) !== target && reusesSavedHeader(saved.headers, headers))
+    throw new Error(HEADERS_REBOUND_MESSAGE);
+}
+
 export async function setProviderHeaders(
   provider: ProviderId,
   headers: Record<string, string>,
   baseUrl?: string,
 ): Promise<void> {
   validateProviderHeaders(headers);
+  await assertProviderHeadersBinding(provider, headers, baseUrl);
   const entries = Object.entries(headers).filter(
     ([name, value]) => name.trim() && value.trim(),
   );
@@ -176,9 +195,8 @@ async function runtimeConfig(
   const savedHeaders = saved.headers;
   const headers = overrides?.headers ?? savedHeaders;
   validateProviderHeaders(headers);
-  if (Object.keys(savedHeaders).length && normalizeBaseUrl(saved.baseUrl) !== baseUrl &&
-      Object.entries(savedHeaders).some(([name, value]) => Object.entries(headers).some(([candidate, supplied]) => candidate.toLowerCase() === name.toLowerCase() && supplied === value)))
-    throw new Error("Base URLを変更したため、追加ヘッダーを消去して新しい接続先の値を入力してください。");
+  if (Object.keys(savedHeaders).length && normalizeBaseUrl(saved.baseUrl) !== baseUrl && reusesSavedHeader(savedHeaders, headers))
+    throw new Error(HEADERS_REBOUND_MESSAGE);
   return {
     baseUrl,
     protocol: overrides?.protocol ?? stored.protocol,
@@ -299,12 +317,24 @@ export function createProvider(
         maxRetries: 1,
         abortSignal: deadline.signal,
       });
-      if (!result.output)
-        throw new Error("The provider returned no structured output.");
-      let parsed = opts.schema.safeParse(result.output);
+      // ai@7 only parses output when finishReason is "stop" and its getter
+      // throws otherwise. Recover valid JSON from non-standard finish reasons
+      // and surface truncation as a retryable structured-output error.
+      let output: unknown;
+      try {
+        output = result.output;
+      } catch (error) {
+        if (!NoOutputGeneratedError.isInstance(error)) throw error;
+        try { output = JSON.parse(result.text); } catch { output = undefined; }
+      }
+      if (output === undefined || output === null)
+        throw new Error(result.finishReason === "length"
+          ? "The provider truncated the structured output at the output token limit."
+          : `The provider returned no structured output (${result.finishReason}).`);
+      let parsed = opts.schema.safeParse(output);
       if (!parsed.success) {
-        const unwrapped = unwrapStructuredOutput(result.output);
-        if (unwrapped !== result.output) {
+        const unwrapped = unwrapStructuredOutput(output);
+        if (unwrapped !== output) {
           const retry = opts.schema.safeParse(unwrapped);
           if (retry.success) parsed = retry;
         }
@@ -403,7 +433,9 @@ export async function testProviderPdfConnection(
   const { captureDatabaseGeneration } = await import("../db/database");
   const generation = captureDatabaseGeneration();
   const provider = createProvider(id, overrides);
-  const schema = z.object({ marker: z.literal(PDF_PROBE_MARKER) });
+  // Do not reveal the expected marker in the schema: constrained decoding
+  // (enum) would force it even when the model never received the PDF.
+  const schema = z.object({ marker: z.string() });
   const result = await provider.generateJson({
     model,
     system:
@@ -422,7 +454,7 @@ export async function testProviderPdfConnection(
   });
   const { logUsage } = await import("./usage");
   await logUsage(id, model, "extraction", result.usage, generation);
-  return result.data.marker === PDF_PROBE_MARKER;
+  return result.data.marker.trim() === PDF_PROBE_MARKER;
 }
 
 const normalizeCapabilityKey = (value: string) =>

@@ -29,6 +29,41 @@ type Summary = {
   months: { month: string; cost: number }[];
 };
 type Price = { inputPerMillion: number; outputPerMillion: number };
+const monthKey = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+
+/** Keeps the typed text so intermediate input such as "1." or "0.0" is not
+ * collapsed by Number() -> String() on every keystroke. Only valid,
+ * non-negative prices are committed. */
+function PriceField({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  placeholder: string;
+}) {
+  // `base` is the value the draft corresponds to; a different incoming value
+  // (e.g. reloaded settings) replaces the draft.
+  const [draft, setDraft] = useState({ text: String(value), base: value });
+  const text = draft.base === value ? draft.text : String(value);
+  return (
+    <Field
+      style={{ flex: 1 }}
+      value={text}
+      keyboardType="decimal-pad"
+      onChangeText={(next) => {
+        const parsed = Number(next.replace(",", "."));
+        const valid =
+          next.trim() !== "" && Number.isFinite(parsed) && parsed >= 0;
+        setDraft({ text: next, base: valid ? parsed : value });
+        if (valid) onChange(parsed);
+      }}
+      placeholder={placeholder}
+    />
+  );
+}
 export default function Usage() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -65,16 +100,17 @@ export default function Usage() {
       "SELECT created_at,est_cost_usd FROM usage_log WHERE created_at>=?",
       Date.now() - 190 * 86400000,
     );
+    // Bucket by local calendar month. Anchoring on day 1 avoids setMonth()
+    // overflow on the 29th-31st (e.g. Mar 31 - 1 month = Mar 3).
     const monthMap = new Map<string, number>();
     for (const row of raw) {
-      const key = new Date(row.created_at).toISOString().slice(0, 7);
+      const key = monthKey(new Date(row.created_at));
       monthMap.set(key, (monthMap.get(key) ?? 0) + row.est_cost_usd);
     }
     const months = [];
+    const today = new Date();
     for (let i = 5; i >= 0; i--) {
-      const d = new Date();
-      d.setMonth(d.getMonth() - i);
-      const key = d.toISOString().slice(0, 7);
+      const key = monthKey(new Date(today.getFullYear(), today.getMonth() - i, 1));
       months.push({ month: key, cost: monthMap.get(key) ?? 0 });
     }
     setData({
@@ -193,7 +229,7 @@ export default function Usage() {
             title={t("saveCap")}
             onPress={async () => {
               await setSetting("monthlyCapEnabled", capEnabled);
-              await setSetting("monthlyCapUsd", Number(cap) || 0);
+              await setSetting("monthlyCapUsd", Math.max(0, Number(cap.replace(",", ".")) || 0));
             }}
           />
         </Card>
@@ -204,26 +240,22 @@ export default function Usage() {
             <View key={model} style={{ gap: 6 }}>
               <Text style={styles.statName}>{model}</Text>
               <View style={commonStyles.row}>
-                <Field
-                  style={{ flex: 1 }}
-                  value={String(p.inputPerMillion)}
-                  keyboardType="decimal-pad"
-                  onChangeText={(v) =>
+                <PriceField
+                  value={p.inputPerMillion}
+                  onChange={(v) =>
                     setTable((t) => ({
                       ...t,
-                      [model]: { ...p, inputPerMillion: Number(v) || 0 },
+                      [model]: { ...t[model], inputPerMillion: v },
                     }))
                   }
                   placeholder="Input"
                 />
-                <Field
-                  style={{ flex: 1 }}
-                  value={String(p.outputPerMillion)}
-                  keyboardType="decimal-pad"
-                  onChangeText={(v) =>
+                <PriceField
+                  value={p.outputPerMillion}
+                  onChange={(v) =>
                     setTable((t) => ({
                       ...t,
-                      [model]: { ...p, outputPerMillion: Number(v) || 0 },
+                      [model]: { ...t[model], outputPerMillion: v },
                     }))
                   }
                   placeholder="Output"

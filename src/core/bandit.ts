@@ -4,12 +4,18 @@ import type { BanditArmState, InteractionSignal } from "./types";
 export function rewardFromInteractions(
   signals: readonly InteractionSignal[],
 ): number {
+  // Signals must be in chronological order: like/save are toggles, so only
+  // the latest like/unlike and save/unsave state contributes a reward.
   let reward = 0;
+  let liked = false;
+  let saved = false;
   for (const signal of signals) {
-    if (signal.action === "quiz_correct" || signal.action === "like")
-      reward = Math.max(reward, 1);
-    else if (signal.action === "expand" || signal.action === "save")
-      reward = Math.max(reward, 0.8);
+    if (signal.action === "like" || signal.action === "unlike")
+      liked = signal.action === "like";
+    else if (signal.action === "save" || signal.action === "unsave")
+      saved = signal.action === "save";
+    else if (signal.action === "quiz_correct") reward = Math.max(reward, 1);
+    else if (signal.action === "expand") reward = Math.max(reward, 0.8);
     else if (signal.action === "quiz_wrong") reward = Math.max(reward, 0.5);
     else if (
       signal.action === "impression" &&
@@ -17,6 +23,8 @@ export function rewardFromInteractions(
     )
       reward = Math.max(reward, 0.4);
   }
+  if (liked) reward = Math.max(reward, 1);
+  if (saved) reward = Math.max(reward, 0.8);
   return reward;
 }
 
@@ -69,5 +77,8 @@ export function sampleBeta(
 ): number {
   const x = sampleGamma(alpha, rng);
   const y = sampleGamma(beta, rng);
-  return x / (x + y);
+  const value = x / (x + y);
+  // Tiny shapes can underflow both draws to 0; fall back to the posterior mean
+  // so a NaN never reaches the feed comparator.
+  return Number.isFinite(value) ? value : alpha / (alpha + beta);
 }

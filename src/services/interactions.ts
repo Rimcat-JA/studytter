@@ -161,13 +161,13 @@ async function applyAction(
     "INSERT INTO interactions(id,post_id,action,dwell_ms,created_at) VALUES(?,?,?,?,?)",
     createId("ix"), postId, action, dwellMs ?? null, now,
   );
-  if (["like", "save", "expand", "quiz_correct", "quiz_wrong", "impression", "skip"].includes(action)) {
+  if (["like", "unlike", "save", "unsave", "expand", "quiz_correct", "quiz_wrong", "impression", "skip"].includes(action)) {
     const rows = await db.getAllAsync<{
       post_id: string;
       action: InteractionAction;
       dwell_ms: number | null;
     }>(
-      "SELECT i.post_id,i.action,i.dwell_ms FROM interactions i JOIN posts p ON p.id=i.post_id WHERE p.topic_key=? AND p.format=?",
+      "SELECT i.post_id,i.action,i.dwell_ms FROM interactions i JOIN posts p ON p.id=i.post_id WHERE p.topic_key=? AND p.format=? ORDER BY i.created_at,i.rowid",
       post.topic_key, post.format,
     );
     const grouped = new Map<string, InteractionSignal[]>();

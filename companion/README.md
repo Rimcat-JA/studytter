@@ -19,7 +19,8 @@ Python 3.11以上が必要です。WindowsはPythonインストーラーのTcl/T
 
 ```powershell
 # Windows / PowerShell（companionフォルダで）
-.\start-windows.ps1
+# 既定の実行ポリシーではスクリプトが拒否されるため、このプロセスだけ許可します
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start-windows.ps1
 ```
 
 ```sh
@@ -82,7 +83,7 @@ Windows版はWindows、Linux版は対象とするLinux上でビルドします�
 
 ```powershell
 python -m pip install -r requirements.txt pyinstaller==6.21.0
-.\build-windows.ps1 -OutputDirectory .\dist
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-windows.ps1 -OutputDirectory .\dist
 ```
 
 ```sh

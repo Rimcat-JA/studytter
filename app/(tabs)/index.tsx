@@ -108,7 +108,8 @@ export default function FeedScreen() {
           const started = visible.current.get(post.id);
           if (started) {
             visible.current.delete(post.id);
-            recordAction(post.id, "impression", Date.now() - started).catch(
+            // Wall-clock time can move backwards; dwell must stay non-negative.
+            recordAction(post.id, "impression", Math.max(0, Date.now() - started)).catch(
               console.error,
             );
           }

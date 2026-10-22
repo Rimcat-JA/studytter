@@ -18,6 +18,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    # Redirected/piped output uses the locale code page on Windows (e.g. cp932),
+    # which cannot encode progress labels such as "·" and would abort the build.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description="Studytter Companion — prepare learning materials with a local LLM.")
     parser.add_argument("--headless", action="store_true", help="Generate without opening a window")
     parser.add_argument("--smoke-test", action="store_true", help="Open the native UI briefly and exit")

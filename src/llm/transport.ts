@@ -27,14 +27,16 @@ export const providerFetch: typeof fetch = (input, init) =>
   globalThis.fetch(input, { ...init, redirect: "error" });
 
 // Web demo debugging: show the provider's own reason, with key-like tokens redacted.
+// React Native defines `window` (global.window = global) but not `document`;
+// native errors are persisted and exported, so they must never carry raw bodies.
 function webErrorDetail(body: unknown): string {
-  if (typeof window === "undefined" || typeof body !== "string" || !body) return "";
+  if (typeof document === "undefined" || typeof body !== "string" || !body) return "";
   let text = body;
   try {
     const e = JSON.parse(body).error;
     text = [e?.message, e?.metadata?.raw].filter(Boolean).join(" | ") || body;
   } catch {}
-  return " " + String(text).replace(/(sk|key)[-_][A-Za-z0-9_-]{8,}/gi, "[redacted]").slice(0, 400);
+  return " " + String(text).replace(/(sk|key)[-_][A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{20,}|Bearers+[A-Za-z0-9._~+/-]{8,}/gi, "[redacted]").slice(0, 400);
 }
 
 /** API/Retry errors can contain echoed credentials in both message and body.
@@ -53,7 +55,11 @@ export function sanitizeProviderError(input: unknown): unknown {
     if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
       const message = status === 401 || status === 403 ? `Provider authentication failed (${status}).`
         : status === 429 ? `Provider rate limit reached (${status}).`
-        : [400, 404, 422].includes(status) ? `Provider rejected the request, model or endpoint (${status}).`
+        // Keep 404 distinguishable: classifyGenerationError pauses generation
+        // for configuration errors, and a generic 400/422 (content filter,
+        // oversized request) must stay retryable instead of matching "model".
+        : status === 404 ? `Provider model or endpoint not found (${status}).`
+        : status === 400 || status === 422 ? `Provider rejected the request (${status}).`
         : `Provider request failed (${status}).`;
       const safe = new Error(message + webErrorDetail(item.responseBody)) as Error & { status: number; statusCode: number; responseHeaders?: Record<string, string> };
       safe.status = status;

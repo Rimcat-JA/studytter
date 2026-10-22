@@ -164,7 +164,7 @@ class App(tk.Tk):
         self.model_box.configure(values=())
 
     def add_files(self):
-        for value in filedialog.askopenfilenames(title="教材を選択", filetypes=(("教材", "*.pdf *.txt *.md"), ("PDF", "*.pdf"), ("テキスト", "*.txt *.md"))):
+        for value in filedialog.askopenfilenames(title="教材を選択", filetypes=(("教材", "*.pdf *.PDF *.txt *.TXT *.md *.MD"), ("PDF", "*.pdf *.PDF"), ("テキスト", "*.txt *.TXT *.md *.MD"), ("すべてのファイル", "*"))):
             path = Path(value).resolve()
             if path not in self.files:
                 self.files.append(path)

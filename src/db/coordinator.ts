@@ -67,7 +67,13 @@ export class DatabaseCoordinator {
       await db.execAsync("COMMIT");
       return result;
     } catch (error) {
-      await db.execAsync("ROLLBACK");
+      // SQLite may already have rolled back (SQLITE_FULL, OR ROLLBACK, ...).
+      // Never let the follow-up ROLLBACK failure mask the original cause.
+      try {
+        await db.execAsync("ROLLBACK");
+      } catch {
+        /* no active transaction */
+      }
       throw error;
     }
   }

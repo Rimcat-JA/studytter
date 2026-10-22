@@ -63,6 +63,15 @@ export function interleave<T extends RankablePost>(
     .map(({ post }) => post);
   const pool = ranked.filter(({ post }) => post.format !== "entertainment");
   const learning: T[] = [];
+  // After enough interactions, guarantee at least one quiz in every window of
+  // `quizSpacing` posts. Applying the quota during selection keeps quizzes
+  // spread out and preserves both rank order and the subject-run limit.
+  const quizQuota = interactionCount >= CONFIG.quizRatioInteractionThreshold;
+  const quizSpacing = Math.max(
+    1,
+    Math.round(1 / CONFIG.minQuizRatioAfterInteractions),
+  );
+  let sinceQuiz = 0;
   while (pool.length) {
     const recentSubjects = learning
       .slice(-CONFIG.maxConsecutiveSubject)
@@ -72,21 +81,33 @@ export function interleave<T extends RankablePost>(
       recentSubjects.every((s) => s === recentSubjects[0])
         ? recentSubjects[0]
         : null;
-    let index = pool.findIndex(({ post }) => post.subjectId !== blockedSubject);
+    // The redundancy penalty depends on what was already placed, so it is
+    // applied here against the feed being built rather than in rankPosts.
+    const best = (accept: (post: T) => boolean) => {
+      let found = -1;
+      let bestScore = -Infinity;
+      pool.forEach(({ post, score }, i) => {
+        if (!accept(post)) return;
+        const adjusted =
+          (Number.isFinite(score) ? score : -Infinity) -
+          CONFIG.scoreWeights.redundancy * redundancyPenalty(post, learning);
+        if (found < 0 || adjusted > bestScore) {
+          found = i;
+          bestScore = adjusted;
+        }
+      });
+      return found;
+    };
+    let index = -1;
+    if (quizQuota && sinceQuiz >= quizSpacing - 1)
+      index = best(
+        (post) => post.format === "quiz" && post.subjectId !== blockedSubject,
+      );
+    if (index < 0) index = best((post) => post.subjectId !== blockedSubject);
     if (index < 0) index = 0;
-    learning.push(pool.splice(index, 1)[0].post);
-  }
-  if (interactionCount >= CONFIG.quizRatioInteractionThreshold) {
-    const target = Math.min(
-      Math.ceil(learning.length * CONFIG.minQuizRatioAfterInteractions),
-      learning.filter((p) => p.format === "quiz").length,
-    );
-    for (let i = 0; i < target; i++) {
-      if (learning[i].format === "quiz") continue;
-      const later = learning.findIndex((p, j) => j > i && p.format === "quiz");
-      if (later < 0) break;
-      [learning[i], learning[later]] = [learning[later], learning[i]];
-    }
+    const next = pool.splice(index, 1)[0].post;
+    sinceQuiz = next.format === "quiz" ? 0 : sinceQuiz + 1;
+    learning.push(next);
   }
   const output: T[] = [];
   let nextBreak =

@@ -117,7 +117,8 @@ export async function getProgress() {
     "SELECT current_streak,longest_streak,freezes_owned FROM streak_state WHERE id=1",
   );
   const topics = await db.getAllAsync<{ topic_key: string; theta: number }>(
-    "SELECT topic_key,theta FROM user_topic_state ORDER BY topic_key",
+    // Hide topics of deleted or hidden subjects (topic_key = "<subjectId>:<topic>").
+    "SELECT u.topic_key,u.theta FROM user_topic_state u WHERE EXISTS (SELECT 1 FROM subjects s WHERE s.enabled=1 AND substr(u.topic_key,1,length(s.subject_id)+1)=s.subject_id||':') ORDER BY u.topic_key",
   );
   const total = xp?.total ?? 0;
   return {

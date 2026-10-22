@@ -197,12 +197,17 @@ export function classifyGenerationError(
   const lower = combinedMessage.toLocaleLowerCase();
   const status = chain.map(statusOf).find((value) => value !== undefined);
   const retryAfterMs = retryAfterFromChain(chain, combinedMessage, now);
+  if (status === 401 || status === 403)
+    return { code: "authentication", message, retryable: false };
+  // An explicit transient status wins over wording: rate-limit and outage
+  // bodies often mention "API key" or "authentication" without being auth failures.
+  const transientStatus =
+    status === 429 || (status !== undefined && status >= 500);
   if (
-    status === 401 ||
-    status === 403 ||
-    lower.includes("api key") ||
-    lower.includes("unauthorized") ||
-    lower.includes("authentication")
+    !transientStatus &&
+    (lower.includes("api key") ||
+      lower.includes("unauthorized") ||
+      lower.includes("authentication"))
   )
     return { code: "authentication", message, retryable: false };
   if (
@@ -261,7 +266,12 @@ export function computeGenerationBackoffMs(
   rng: () => number = Math.random,
 ): number {
   const exponent = Math.max(0, Math.min(20, consecutiveFailures - 1));
-  const exponential = Math.min(6 * 60 * 60_000, 60_000 * 2 ** exponent);
-  const jittered = Math.round(exponential * (0.8 + 0.4 * rng()));
+  const ceiling = 6 * 60 * 60_000;
+  const exponential = Math.min(ceiling, 60_000 * 2 ** exponent);
+  // Clamp after jitter so the documented six-hour ceiling actually holds.
+  const jittered = Math.min(
+    ceiling,
+    Math.round(exponential * (0.8 + 0.4 * rng())),
+  );
   return Math.max(jittered, retryAfterMs ?? 0);
 }

@@ -1,6 +1,6 @@
 import * as DocumentPicker from "expo-document-picker";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -28,15 +28,9 @@ import {
 } from "../../src/ui/components";
 import { colors } from "../../src/ui/theme";
 import { useTranslation } from "react-i18next";
+import { DEFAULT_FORMAT_WEIGHTS } from "../../src/core/config";
 
-const weights = {
-  explainer: 0.3,
-  quiz: 0.3,
-  funfact: 0.1,
-  misconception: 0.1,
-  comparison: 0.1,
-  mnemonic: 0.1,
-};
+const weights = DEFAULT_FORMAT_WEIGHTS;
 export default function NewSubject() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -64,7 +58,19 @@ export default function NewSubject() {
         })),
       );
   };
+  // The API-key check awaits before `busy` hides the button, so a double tap
+  // would otherwise create two subjects, copy files twice and enqueue two jobs.
+  const creatingRef = useRef(false);
   const create = async () => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      await createSubject();
+    } finally {
+      creatingRef.current = false;
+    }
+  };
+  const createSubject = async () => {
     if (!name.trim() || !files.length) {
       Alert.alert("入力を確認してください", "科目名と教材が必要です。");
       return;
@@ -111,8 +117,8 @@ export default function NewSubject() {
       await db.runAsync(
         "INSERT INTO subjects VALUES(?,?,?,?,?,?,?,?,?)",
         subjectId,
-        name.trim(),
-        `@${name.trim().replace(/\s+/g, "_").toLowerCase()}`,
+        name.trim().slice(0, 500),
+        `@${name.trim().replace(/\s+/g, "_").toLowerCase().slice(0, 499)}`,
         "subject-" + subjectId,
         "ja",
         "mixed",

@@ -60,7 +60,7 @@ export function createImportSchema(quizSchema: z.ZodType) {
       id, post_id: id, session_key: id, answer_index: count.nullable(), correct: flag,
       created_at: timestamp, next_review_at: timestamp,
     }).strict().refine((row) => row.next_review_at >= row.created_at, "Review date precedes the answer")).default([]),
-    banditArms: z.array(z.object({ topic_key: id, format, alpha: z.number().finite().positive(), beta: z.number().finite().positive() }).strict()),
+    banditArms: z.array(z.object({ topic_key: id, format, alpha: z.number().finite().min(1), beta: z.number().finite().min(1) }).strict()),
     atomMemory: z.array(z.object({ atom_id: id, stability_days: z.number().finite().positive(), last_reviewed_at: timestamp.nullable(), review_count: count, lapse_count: count }).strict()
       .refine((row) => row.lapse_count <= row.review_count, "Lapses exceed review count")),
     userTopicState: z.array(z.object({ topic_key: id, theta: z.number().finite(), attempts: count }).strict()),

@@ -2,7 +2,7 @@ import { createInstance } from "i18next";
 import { initReactI18next } from "react-i18next";
 import { getSetting } from "../db/database";
 
-const resources = {
+export const resources = {
   ja: {
     translation: {
       forYou: "おすすめ",
@@ -76,6 +76,13 @@ const resources = {
       noAtomsHelp:
         "失敗した教材を再試行するか、戻って別の教材を選択してください。",
       thread: "スレッド",
+      postNotFound: "投稿が見つかりません。削除された可能性があります。",
+      answerRecorded: "回答を記録しました",
+      invalidQuiz: "問題データを読み込めません。このカードは回答できません。",
+      savingAnswer: "保存中…",
+      cardLoadFailed: "学習状態を読み込めませんでした。",
+      cardSaveFailed: "保存できませんでした。もう一度操作してください。",
+      retry: "再読み込み",
       askMore: "さらに質問する",
       you: "あなた",
       explanationFailed: "説明を取得できませんでした。",
@@ -304,6 +311,13 @@ const resources = {
       noAtoms: "No items were extracted",
       noAtomsHelp: "Retry failed materials or go back and select another file.",
       thread: "Thread",
+      postNotFound: "This post could not be found. It may have been deleted.",
+      answerRecorded: "Answer recorded",
+      invalidQuiz: "This quiz data cannot be read, so the card cannot be answered.",
+      savingAnswer: "Saving…",
+      cardLoadFailed: "Could not load the learning state.",
+      cardSaveFailed: "Could not save. Please try again.",
+      retry: "Reload",
       askMore: "Ask a follow-up",
       you: "You",
       explanationFailed: "Could not load the explanation.",
@@ -528,6 +542,13 @@ const resources = {
       noAtoms: "没有提取到内容",
       noAtomsHelp: "请重试或返回选择其他教材。",
       thread: "讨论串",
+      postNotFound: "找不到该帖子，可能已被删除。",
+      answerRecorded: "已记录回答",
+      invalidQuiz: "无法读取题目数据，此卡片无法作答。",
+      savingAnswer: "正在保存…",
+      cardLoadFailed: "无法加载学习状态。",
+      cardSaveFailed: "无法保存，请重试。",
+      retry: "重新加载",
       askMore: "继续提问",
       you: "你",
       explanationFailed: "无法获取说明。",

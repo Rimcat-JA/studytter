@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,14 +46,23 @@ def check_cancelled(cancel: threading.Event) -> None:
         raise CancelledError("Stopped. Completed chunks are retained; use Resume.")
 
 
+def utf16_length(value: str) -> int:
+    """Android validates with JavaScript string length (UTF-16 code units)."""
+    return len(value.encode("utf-16-le")) // 2
+
+
 def text(value: object, label: str, limit: int, allow_empty: bool = False) -> str:
-    if not isinstance(value, str) or len(value) > limit or (not allow_empty and not value.strip()):
+    if not isinstance(value, str) or utf16_length(value) > limit or (not allow_empty and not value.strip()):
         raise ValidationError(f"{label} must be {'nonempty ' if not allow_empty else ''}text, at most {limit} characters.")
     return value.strip() if not allow_empty else value
 
 
 def number(value: object, label: str, minimum: float, maximum: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum:
+    try:
+        valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and minimum <= value <= maximum
+    except OverflowError:  # an int too large for a float
+        valid = False
+    if not valid:
         raise ValidationError(f"{label} must be a finite number from {minimum} to {maximum}.")
     return value
 
@@ -87,6 +97,16 @@ def normalized_words(value: str) -> str:
     return " ".join(value.split())
 
 
+def grounding_key(value: str) -> str:
+    """Canonical form for the verbatim-quote check.
+
+    PDF extraction inserts line breaks inside CJK sentences and emits
+    compatibility forms (Kangxi radicals, ligatures, full-width letters) that
+    models normalize when quoting, so compare NFKC text without whitespace.
+    """
+    return "".join(unicodedata.normalize("NFKC", value).split())
+
+
 def validate_model_chunk(value: object, source: str) -> list[dict]:
     """Validate everything before accepting any part of a model response."""
     if not isinstance(value, dict) or not isinstance(value.get("atoms"), list) or not 1 <= len(value["atoms"]) <= 12:
@@ -102,8 +122,9 @@ def validate_model_chunk(value: object, source: str) -> list[dict]:
             "core": text(raw.get("core"), "core", 500),
             "sourceExcerpt": text(raw.get("sourceExcerpt"), "sourceExcerpt", 2_000),
         }
-        if normalized_words(atom["sourceExcerpt"]) not in normalized_words(source):
-            raise ValidationError("sourceExcerpt must quote an exact passage from the supplied source, without paraphrasing.")
+        if grounding_key(atom["sourceExcerpt"]) not in grounding_key(source):
+            excerpt = atom["sourceExcerpt"][:80]
+            raise ValidationError(f"sourceExcerpt must quote an exact passage from the supplied source, without paraphrasing (not found: {excerpt!r})")
         if "note" in raw:
             atom["note"] = text(raw["note"], "note", 2_000, True)
         posts = raw.get("posts")
@@ -240,11 +261,15 @@ class LlmClient:
             content = completion["message"]["content"]
             if not isinstance(content, str):
                 raise ValidationError("The model returned no text content.")
-            content = content.strip()
-            if content.startswith("```"):
-                content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
-            return json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            # Reasoning models and chatty servers wrap the object in <think>
+            # blocks, prose or code fences; read the first JSON object only.
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+            start = content.find("{")
+            if start < 0:
+                raise ValueError("no JSON object")
+            value, _ = json.JSONDecoder().raw_decode(content, start)
+            return value
+        except (KeyError, IndexError, TypeError, ValueError):
             raise ValidationError("The model must return one valid JSON object with an atoms array.") from None
 
 
@@ -447,15 +472,21 @@ def validate_package(package: object) -> None:
             validate_quiz(post.get("quiz"))
         elif "quiz" in post:
             raise ValidationError("Unexpected quiz on a non-quiz post.")
-    if len(json.dumps(package, ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_PACKAGE_BYTES:
+    # Measure the same serialization export_package writes; a compact check
+    # let "complete" packages through that could never be exported.
+    if len(serialize_package(package)) > MAX_PACKAGE_BYTES:
         raise ValidationError("The learning package exceeds Android's 25 MB limit.")
+
+
+def serialize_package(package: dict) -> bytes:
+    return json.dumps(package, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
 
 
 def export_package(package: dict, destination: Path) -> None:
     """Validate before writing; replace a complete file atomically."""
     validate_package(package)
     destination = destination.expanduser().resolve()
-    data = json.dumps(package, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
+    data = serialize_package(package)
     if len(data) > MAX_PACKAGE_BYTES:
         raise ValidationError("The formatted learning package exceeds 25 MB.")
     temporary = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".tmp")

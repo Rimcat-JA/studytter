@@ -59,6 +59,8 @@ export interface SchedulerAtom {
   sourceAnchor: string;
   urgency: number;
   seenCount: number;
+  /** false when the atom has never been reviewed; omitted means unknown/reviewed. */
+  reviewed?: boolean;
 }
 
 export interface SchedulerSubject {

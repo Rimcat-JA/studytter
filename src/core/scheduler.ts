@@ -48,11 +48,17 @@ export function assembleJobs(options: {
   const sampledCount = Math.max(0, count - dueCount - explorationCount);
   const chosen = new Set<string>();
   const jobs: GenerationJob[] = [];
-  const add = (atom: SchedulerAtom, reason: GenerationJob["reason"]) => {
+  const add = (
+    atom: SchedulerAtom,
+    reason: GenerationJob["reason"],
+    sampledFormat?: LearningFormat,
+  ) => {
     const subject = subjectMap.get(atom.subjectId);
     if (!subject || chosen.has(atom.atomId)) return;
     chosen.add(atom.atomId);
-    const format = weightedFormat(subject, atom, rng);
+    // Keep the format whose arm won the Thompson draw; redrawing here would
+    // make the bandit posterior irrelevant to the generated format mix.
+    const format = sampledFormat ?? weightedFormat(subject, atom, rng);
     jobs.push({
       atomId: atom.atomId,
       subjectId: atom.subjectId,
@@ -61,8 +67,11 @@ export function assembleJobs(options: {
       reason,
     });
   };
+  // Only atoms with review history can be "due". Never-reviewed atoms all have
+  // urgency 1 and would otherwise monopolize this bucket in DB scan order.
   [...options.atoms]
-    .sort((a, b) => b.urgency - a.urgency)
+    .filter((atom) => atom.reviewed !== false && atom.urgency > 0)
+    .sort((a, b) => b.urgency - a.urgency || a.seenCount - b.seenCount)
     .slice(0, dueCount)
     .forEach((atom) => add(atom, "due"));
   [...options.atoms]
@@ -78,10 +87,12 @@ export function assembleJobs(options: {
       const state = options.arms.get(
         `${atom.subjectId}:${atom.topicLabel}:${format}`,
       ) ?? { alpha: 1, beta: 1 };
-      return { atom, value: sampleBeta(state.alpha, state.beta, rng) };
+      return { atom, format, value: sampleBeta(state.alpha, state.beta, rng) };
     })
     .sort((a, b) => b.value - a.value);
-  sampled.slice(0, sampledCount).forEach(({ atom }) => add(atom, "sampled"));
+  sampled
+    .slice(0, sampledCount)
+    .forEach(({ atom, format }) => add(atom, "sampled", format));
   // If atoms were exhausted by overlapping buckets, fill from remaining candidates.
   options.atoms
     .filter((a) => !chosen.has(a.atomId))

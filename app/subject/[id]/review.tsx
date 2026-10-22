@@ -130,11 +130,15 @@ export default function Review() {
       Alert.alert(t("confirmation"), t("enableAtLeastOneAtom"));
       return;
     }
+    // Empty or oversized names are rejected by backup restore, so the backup
+    // would become unusable. Fall back to the handle and cap the length.
+    const cleanHandle = handle.trim().replace(/^@+/, "").slice(0, 499) || id;
+    const cleanName = (name.trim() || cleanHandle).slice(0, 500);
     const db = await getDb();
     await db.runAsync(
       "UPDATE subjects SET display_name=?,handle=?,enabled=1 WHERE subject_id=?",
-      name,
-      handle.startsWith("@") ? handle : `@${handle}`,
+      cleanName,
+      `@${cleanHandle}`,
       id,
     );
     router.replace("/(tabs)");

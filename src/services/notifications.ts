@@ -4,6 +4,8 @@ import { CONFIG } from "../core/config";
 import { retention } from "../core/srs";
 import { getDb, getSetting, setSetting } from "../db/database";
 
+const SRS_REMINDER_DELAY_MS = 3 * 60 * 60_000;
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
@@ -33,7 +35,16 @@ export async function setNotificationsEnabled(
   }
   return granted;
 }
-export async function evaluateNotifications(): Promise<void> {
+let evaluation: Promise<void> = Promise.resolve();
+/** Serialized: concurrent runs would each schedule a reminder, orphaning one
+ * that can no longer be cancelled, and could exceed the daily cap. */
+export function evaluateNotifications(): Promise<void> {
+  const next = evaluation.catch(() => undefined).then(evaluateNotificationsNow);
+  evaluation = next;
+  return next;
+}
+
+async function evaluateNotificationsNow(): Promise<void> {
   if (!(await getSetting("notificationsEnabled", false))) return;
   const db = await getDb();
   const now = new Date();
@@ -47,10 +58,16 @@ export async function evaluateNotifications(): Promise<void> {
     "SELECT COUNT(DISTINCT post_id) count FROM interactions WHERE action IN ('like','save','expand','quiz_correct','quiz_wrong','reveal') AND created_at>=?",
     new Date(`${today}T00:00:00`).getTime(),
   );
-  if ((interacted?.count ?? 0) < CONFIG.dailyInteractionsForStreak) {
+  {
+    // Remind today at 20:00 while today's goal is open; once it is met (or
+    // 20:00 has passed) plan tomorrow's reminder so one always exists.
     const atRisk = new Date();
     atRisk.setHours(20, 0, 0, 0);
-    if (atRisk.getTime() <= Date.now()) atRisk.setDate(atRisk.getDate() + 1);
+    if (
+      (interacted?.count ?? 0) >= CONFIG.dailyInteractionsForStreak ||
+      atRisk.getTime() <= Date.now()
+    )
+      atRisk.setDate(atRisk.getDate() + 1);
     const identifier = await Notifications.scheduleNotificationAsync({
       content: {
         title: "今日の学びをつなげよう",
@@ -71,6 +88,16 @@ export async function evaluateNotifications(): Promise<void> {
   );
   const sent = dayState.date === today ? dayState.count : 0;
   if (sent >= CONFIG.maxNotificationsPerDay) return;
+  // Each scheduled reminder is counted once; keep a pending one instead of
+  // stacking another on every foreground.
+  const pendingSrsId = await getSetting<string | null>("srsNotificationId", null);
+  if (
+    pendingSrsId &&
+    (await Notifications.getAllScheduledNotificationsAsync()).some(
+      (request) => request.identifier === pendingSrsId,
+    )
+  )
+    return;
   const rows = await db.getAllAsync<{
     topic_label: string;
     stability_days: number;
@@ -81,19 +108,28 @@ export async function evaluateNotifications(): Promise<void> {
   const due = rows.filter(
     (r) => retention(r.stability_days, r.last_reviewed_at) < 0.85,
   );
+  // A reminder is for when the user is away: schedule it a few hours ahead
+  // (inside allowed hours) instead of firing while the app is being opened.
+  const remindAt = new Date(now.getTime() + SRS_REMINDER_DELAY_MS);
   if (
     due.length >= 5 &&
-    now.getHours() >= CONFIG.notificationQuietEndHour &&
-    now.getHours() < CONFIG.notificationQuietStartHour
+    remindAt.toLocaleDateString("en-CA") === today &&
+    remindAt.getHours() >= CONFIG.notificationQuietEndHour &&
+    remindAt.getHours() < CONFIG.notificationQuietStartHour
   ) {
-    await Notifications.scheduleNotificationAsync({
+    const identifier = await Notifications.scheduleNotificationAsync({
       content: {
         title: "そろそろ復習のタイミング",
         body: `${due[0].topic_label}を少し思い出してみましょう。`,
         data: { kind: "srs" },
       },
-      trigger: null,
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: remindAt,
+        channelId: "learning",
+      },
     });
+    await setSetting("srsNotificationId", identifier);
     await setSetting("notificationDayState", { date: today, count: sent + 1 });
   }
 }

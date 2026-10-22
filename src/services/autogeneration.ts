@@ -202,7 +202,10 @@ function announce(inserted: number) {
 }
 
 let inFlight: Promise<AutoGenerationResult> | null = null;
-const LEASE_DURATION_MS = 15 * 60_000;
+// Short lease plus a heartbeat: a run killed with the process (swipe away,
+// OOM) must not block every trigger, including "Generate now", for long.
+const LEASE_DURATION_MS = 2 * 60_000;
+const LEASE_HEARTBEAT_MS = 30_000;
 
 // Web runs in a single tab with no OS worker: a lease left by a reload is stale.
 let staleWebLeaseCleared = false;
@@ -270,9 +273,13 @@ async function runAutoGeneration(
     const leaseToken = await acquireGenerationLease(generation);
     if (!leaseToken)
       return { status: "skipped", inserted: 0, reason: "in_flight" };
+    const heartbeat = setInterval(() => {
+      renewGenerationLease(leaseToken, generation).catch(() => {});
+    }, LEASE_HEARTBEAT_MS);
     try {
       return await runAutoGenerationWithLease(trigger, options, leaseToken, generation);
     } finally {
+      clearInterval(heartbeat);
       await releaseGenerationLease(leaseToken, generation).catch(() => {});
     }
   } catch (error) {

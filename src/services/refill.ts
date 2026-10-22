@@ -53,6 +53,7 @@ export async function buildRefillJobs(count: number, subjectId?: string, generat
         lastReviewedAt: a.last_reviewed_at,
       }),
       seenCount: a.seen_count,
+      reviewed: a.last_reviewed_at !== null,
     })),
     subjects: subjects.map(
       (s) =>

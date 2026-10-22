@@ -39,7 +39,8 @@ export default function RootLayout() {
       healthTimer = setTimeout(async () => {
         if (AppState.currentState === "active")
           await generateIfOnboarded("health").catch(() => {});
-        await scheduleHealthCheck();
+        // A single failed settings read must not end health checks forever.
+        await scheduleHealthCheck().catch(console.error);
       }, settings.foregroundIntervalMinutes * 60_000);
     };
     const unsubscribeSettings = subscribeToAutoGenerationSettings(() => {
@@ -48,9 +49,11 @@ export default function RootLayout() {
     (async () => {
       await initI18n();
       await seedDemoIfNeeded();
-      await grantDailyOpen();
-      await registerBackgroundRefill();
-      await evaluateNotifications();
+      // Optional startup work must not prevent extraction resume and
+      // initial generation below from running.
+      await grantDailyOpen().catch(console.error);
+      await registerBackgroundRefill().catch(console.error);
+      await evaluateNotifications().catch(console.error);
       setReady(true);
       void requestExtractionWork("startup").catch(() => {});
       void generateIfOnboarded("initial").catch(() => {});
@@ -61,8 +64,13 @@ export default function RootLayout() {
     });
     const listener = AppState.addEventListener("change", (state) => {
       if (state === "active") {
+        // Resuming on a new day must grant the daily-open XP as well.
+        grantDailyOpen().catch(() => {});
         requestExtractionWork("foreground").catch(() => {});
         generateIfOnboarded("foreground").catch(() => {});
+        evaluateNotifications().catch(() => {});
+      } else if (state === "background") {
+        // Re-plan reminders with today's progress before the user leaves.
         evaluateNotifications().catch(() => {});
       }
     });

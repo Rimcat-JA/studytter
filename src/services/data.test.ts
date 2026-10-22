@@ -53,7 +53,7 @@ describe("validated backup restore", () => {
     expect(await fixture.db.getFirstAsync("SELECT * FROM streak_state")).toMatchObject({ id: 1 });
     expect(await fixture.db.getFirstAsync("SELECT * FROM settings WHERE key='llm.provider.openai.baseUrl'"))
       .toMatchObject({ value_json: '"https://api.openai.com/v1"' });
-    expect(await fixture.db.getFirstAsync("SELECT file_uri,status FROM materials")).toEqual({ file_uri: "", status: "failed" });
+    expect(await fixture.db.getFirstAsync("SELECT file_uri,status FROM materials")).toEqual({ file_uri: "", status: "done" });
     await expect(old.runAsync("INSERT INTO interactions VALUES('old','p','like',NULL,6)")).rejects.toBeInstanceOf(DatabaseReplacedError);
   });
 
@@ -101,6 +101,29 @@ describe("validated backup restore", () => {
     await restoreData(exported);
     expect(await fixture.db.getAllAsync("SELECT * FROM quiz_attempts")).toHaveLength(1);
     expect(await fixture.db.getAllAsync("SELECT * FROM extraction_jobs")).toEqual([]);
+  });
+
+  it("keeps synthetic package/demo sources and completed materials usable after restore", async () => {
+    const input = backup();
+    input.materials[0].file_uri = "studytter-package://pkg/m";
+    input.materials.push({ ...input.materials[0], material_id: "m2", file_uri: "file:///gone.pdf", status: "pending" });
+    await restoreData(input);
+    expect(await fixture.db.getAllAsync("SELECT material_id,file_uri,status FROM materials ORDER BY material_id")).toEqual([
+      { material_id: "m", file_uri: "studytter-package://pkg/m", status: "done" },
+      { material_id: "m2", file_uri: "", status: "failed" },
+    ]);
+  });
+
+  it("repairs legacy rows that restore would reject and never exports an unrestorable file", async () => {
+    await restoreData(backup());
+    await fixture.db.runAsync("UPDATE subjects SET display_name='',format_weights_json=?", JSON.stringify({ explainer: 0, quiz: 0 }));
+    await fixture.db.runAsync("UPDATE interactions SET action='impression',dwell_ms=-5000");
+    await createExportFile();
+    const exported = ImportSchema.parse(JSON.parse(fileState.contents));
+    expect(exported.subjects[0].display_name).toBe("@math");
+    expect(exported.interactions[0].dwell_ms).toBe(0);
+    await fixture.db.runAsync("UPDATE atoms SET core=''");
+    await expect(createExportFile()).rejects.toThrow("atoms.0.core");
   });
 
   it.each(["not JSON", "null", "[]"])("safely rejects malformed quiz JSON referenced by an answer: %s", (raw) => {

@@ -99,6 +99,12 @@ describe("provider routing and secrets", () => {
     await expect(createProvider("custom").generateJson(request)).rejects.toThrow(/追加ヘッダー/);
     expect(mocks.generate).not.toHaveBeenCalled();
   });
+  it("refuses to re-bind saved secret headers to a changed Base URL on save", async () => {
+    await setProviderHeaders("custom", { "X-Proxy-Secret": "corp-secret" }, "https://proxy.corp.example/v1");
+    await expect(setProviderHeaders("custom", { "X-Proxy-Secret": "corp-secret" }, "https://other-host.example/v1")).rejects.toThrow(/追加ヘッダー/);
+    await setProviderHeaders("custom", { "X-Proxy-Secret": "other-secret" }, "https://other-host.example/v1");
+    expect(JSON.parse(mocks.secrets.get("providerheaders.custom") ?? "{}")).toMatchObject({ headers: { "X-Proxy-Secret": "other-secret" }, baseUrl: "https://other-host.example/v1" });
+  });
   it("keeps configured provider and model routes", async () => {
     await setPurposeRoute("extraction", { providerId: "gemini", model: "model-z" });
     expect(await getPurposeRoute("extraction")).toEqual({ providerId: "gemini", model: "model-z" });

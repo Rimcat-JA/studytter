@@ -50,6 +50,7 @@ export default function PostDetail() {
   const [thread, setThread] = useState<DeepDiveThread>(emptyDeepDiveThread);
   const [question, setQuestion] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [loadError, setLoadError] = useState<{ id: string; message: string } | null>(null);
   const threadRef = useRef(thread);
   const cancellationRef = useRef<Cancellation | null>(null);
   const activeAssistantIdRef = useRef<string | null>(null);
@@ -82,8 +83,34 @@ export default function PostDetail() {
     ) => {
       if (cancellationRef.current) return;
       const generation = captureDatabaseGeneration();
-
-      const { providerId: provider, model } = await getPurposeRoute("deepdive");
+      // Claim the run synchronously, before any await: otherwise a double tap
+      // on Retry/Send starts two streams and Stop can only cancel the second.
+      const cancellation: Cancellation = {
+        generation,
+        cancelled: false,
+        controller: new AbortController(),
+      };
+      cancellationRef.current = cancellation;
+      setStreaming(true);
+      const release = () => {
+        if (cancellationRef.current !== cancellation) return;
+        cancellationRef.current = null;
+        activeAssistantIdRef.current = null;
+        if (mountedRef.current) setStreaming(false);
+      };
+      let route: Awaited<ReturnType<typeof getPurposeRoute>>;
+      try {
+        route = await getPurposeRoute("deepdive");
+      } catch (error) {
+        release();
+        throw error;
+      }
+      // Stopped or unmounted while the route was loading.
+      if (cancellation.cancelled) {
+        release();
+        return;
+      }
+      const { providerId: provider, model } = route;
       const assistantId = options.retryAssistantId ?? createId("ddm");
       const started = options.retryAssistantId
         ? restartDeepDiveResponse(existingThread, assistantId, {
@@ -97,14 +124,7 @@ export default function PostDetail() {
             providerId: provider,
             modelId: model,
           }).thread;
-      const cancellation: Cancellation = {
-        generation,
-        cancelled: false,
-        controller: new AbortController(),
-      };
-      cancellationRef.current = cancellation;
       activeAssistantIdRef.current = assistantId;
-      setStreaming(true);
       showThread(started);
 
       let answer = "";
@@ -193,11 +213,7 @@ export default function PostDetail() {
           // The visible state still keeps the user's question and partial reply.
         }
       } finally {
-        if (cancellationRef.current === cancellation) {
-          cancellationRef.current = null;
-          activeAssistantIdRef.current = null;
-          if (mountedRef.current) setStreaming(false);
-        }
+        release();
       }
     },
     [persistThread, showThread],
@@ -206,9 +222,15 @@ export default function PostDetail() {
   const stop = useCallback(() => {
     const cancellation = cancellationRef.current;
     const assistantId = activeAssistantIdRef.current;
-    if (!cancellation || !assistantId || !id) return;
+    if (!cancellation || !id) return;
     cancellation.cancelled = true;
     cancellation.controller.abort();
+    if (!assistantId) {
+      // Still starting: no message exists yet, so there is nothing to persist.
+      cancellationRef.current = null;
+      setStreaming(false);
+      return;
+    }
     const interrupted = updateDeepDiveMessage(threadRef.current, assistantId, {
       status: "interrupted",
       errorMessage: "Generation was stopped.",
@@ -227,7 +249,10 @@ export default function PostDetail() {
       const currentPost = await getPost(id);
       if (cancelled) return;
       setPost(currentPost);
-      if (!currentPost) return;
+      if (!currentPost) {
+        setLoadError({ id, message: t("postNotFound") });
+        return;
+      }
       const db = await getDb();
       const atom = await db.getFirstAsync<{
         core: string;
@@ -243,12 +268,18 @@ export default function PostDetail() {
       // The design calls for a first explanation when reply is opened. A
       // failed/interrupted response is retained and offered for explicit retry.
       if (storedThread.messages.length === 0)
-        void run(currentPost, storedThread, atomCore, atomNote);
-    })();
+        void run(currentPost, storedThread, atomCore, atomNote).catch(
+          console.error,
+        );
+    })().catch((error) => {
+      // Without this the screen would stay on an endless spinner.
+      if (!cancelled)
+        setLoadError({ id, message: error instanceof Error ? error.message : String(error) });
+    });
     return () => {
       cancelled = true;
     };
-  }, [id, run, showThread]);
+  }, [id, run, showThread, t]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -261,10 +292,26 @@ export default function PostDetail() {
     };
   }, []);
 
+  const closeButton = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("close", { defaultValue: "閉じる" })}
+      onPress={() => router.back()}
+    >
+      <Text style={styles.close}>×</Text>
+    </Pressable>
+  );
   if (!post)
     return (
       <Screen>
-        <Loading />
+        {loadError?.id === id ? (
+          <>
+            <Header title={t("thread")} right={closeButton} />
+            <Text style={styles.loadError}>{loadError.message}</Text>
+          </>
+        ) : (
+          <Loading />
+        )}
       </Screen>
     );
 
@@ -451,6 +498,7 @@ function ThreadMessage({
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   close: { fontSize: 30, color: colors.text },
+  loadError: { color: colors.muted, padding: 24, textAlign: "center", lineHeight: 20 },
   scrollContent: { paddingBottom: 20 },
   turn: { flexDirection: "row", gap: 10, padding: 14, position: "relative" },
   line: {

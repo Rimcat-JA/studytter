@@ -1,5 +1,5 @@
 import { Directory, File, Paths } from "expo-file-system";
-import { CONFIG } from "../core/config";
+import { CONFIG, DEFAULT_FORMAT_WEIGHTS } from "../core/config";
 import { assertDatabaseGeneration, captureDatabaseGeneration, createId, getDb, getDbForGeneration, withDbTransaction } from "../db/database";
 import { getPurposeRoute } from "../llm/config";
 import {
@@ -77,7 +77,7 @@ export async function extractSubject(
     error?: string;
   };
   const materials = await db.getAllAsync<MaterialRow>(
-    "SELECT material_id,filename,file_uri,mime_type,page_start,page_end FROM materials WHERE subject_id=? AND status IN ('pending','failed')",
+    "SELECT material_id,filename,file_uri,mime_type,page_start,page_end FROM materials WHERE subject_id=? AND status IN ('pending','failed') AND file_uri!='' ORDER BY added_at",
     subjectId,
   );
 
@@ -169,6 +169,9 @@ export async function extractSubject(
       );
       if (!activeMaterial) throw new Error("教材または科目が変更されたため、抽出結果を保存できませんでした。");
       for (const atom of chunk.atoms) {
+        // A whitespace-only label passes the schema but is stored as "" and
+        // would make every later backup unrestorable.
+        if (!atom.topicLabel.trim()) continue;
         const existing = await db.getAllAsync<{ core: string }>(
           "SELECT core FROM atoms WHERE subject_id=? AND lower(trim(topic_label))=lower(trim(?))",
           subjectId,
@@ -283,11 +286,21 @@ export async function extractSubject(
     const merged = mergeExtractionChunks(successful);
     const profile = merged.profile;
     if (profile) {
-      const total =
-        Object.values(profile.formatWeights).reduce((a, b) => a + b, 0) || 1;
-      const normalized = Object.fromEntries(
-        Object.entries(profile.formatWeights).map(([k, v]) => [k, v / total]),
+      const total = Object.values(profile.formatWeights).reduce(
+        (a, b) => a + b,
+        0,
       );
+      // An all-zero profile carries no preference; keep a usable default
+      // instead of storing weights that backup restore rejects.
+      const normalized =
+        total > 0
+          ? Object.fromEntries(
+              Object.entries(profile.formatWeights).map(([k, v]) => [
+                k,
+                v / total,
+              ]),
+            )
+          : DEFAULT_FORMAT_WEIGHTS;
       await db.runAsync(
         "UPDATE subjects SET display_name=?,handle=?,content_lang=?,domain_style=?,format_weights_json=? WHERE subject_id=?",
         profile.suggestedDisplayName,
